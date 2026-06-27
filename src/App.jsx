@@ -100,17 +100,23 @@ const styles = `
   .estop-btn:hover { background: var(--danger); color: white; }
   .estop-btn:active { transform: scale(0.97); }
 
-  /* ── Main Layout ── */
+/* ── Main Layout ── */
   .main {
     display: grid;
-    grid-template-columns: 260px 1fr 280px; /* Slightly adjusted widths for side-by-side center */
+    /* Increased sidebar widths to stretch the layout on wide monitors */
+    grid-template-columns: 320px 1fr 340px; 
     gap: 0; height: calc(100vh - 88px); overflow: hidden;
   }
   .sidebar-left, .sidebar-right { background: var(--bg-panel); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   .sidebar-left  { border-right: 1px solid var(--border); }
   .sidebar-right { border-left:  1px solid var(--border); }
 
-  .center-panel { overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+  .center-panel { 
+    overflow-y: auto; 
+    /* Increased padding to give the center content more breathing room */
+    padding: 32px 48px; 
+    display: flex; flex-direction: column; gap: 24px; 
+  }
 
   /* Side-by-Side Grid inside Center Panel */
   .control-grid {
@@ -119,7 +125,6 @@ const styles = `
     gap: 24px;
     align-items: start;
   }
-
   .section-label {
     font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
     letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); padding: 18px 16px 8px;
