@@ -103,8 +103,8 @@ const styles = `
 /* ── Main Layout ── */
   .main {
     display: grid;
-    /* Increased sidebar widths to stretch the layout on wide monitors */
-    grid-template-columns: 320px 1fr 340px; 
+    /* FLUID WIDTHS: Sidebars take up to 22% of the screen, the center perfectly fills the rest */
+    grid-template-columns: minmax(280px, 22vw) 1fr minmax(280px, 22vw); 
     gap: 0; height: calc(100vh - 88px); overflow: hidden;
   }
   .sidebar-left, .sidebar-right { background: var(--bg-panel); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
@@ -113,18 +113,23 @@ const styles = `
 
   .center-panel { 
     overflow-y: auto; 
-    /* Increased padding to give the center content more breathing room */
-    padding: 32px 48px; 
+    padding: 24px 3%; /* Dynamic padding so it doesn't crush the center */
     display: flex; flex-direction: column; gap: 24px; 
   }
 
   /* Side-by-Side Grid inside Center Panel */
-  .control-grid {
+.control-grid {
     display: grid;
-    grid-template-columns: 1.1fr 0.9fr;
+    grid-template-columns: 1fr 1fr; /* Equal 50/50 split */
     gap: 24px;
     align-items: start;
+    min-width: 900px; /* Prevents squishing */
   }
+
+  /* Breakpoints: Stacks the middle columns if you are on a smaller laptop screen */
+  @media (max-width: 1400px) { .control-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 1024px) { .main { grid-template-columns: 280px 1fr; } .sidebar-right { display: none; } }
+  @media (max-width: 768px)  { .main { grid-template-columns: 1fr; } .sidebar-left { display: none; } }
   .section-label {
     font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
     letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); padding: 18px 16px 8px;
