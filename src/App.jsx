@@ -46,7 +46,7 @@ const CSS = `
 html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--hi);font-family:'Inter',sans-serif;font-size:13px;line-height:1.5}
 #root{width:100%;height:100%}
 
-/* ── Shell: 3 rows, full viewport ── */
+/* ── Shell ── */
 .shell{display:grid;grid-template-rows:52px 1fr 26px;width:100vw;height:100vh;overflow:hidden}
 
 /* ── Header ── */
@@ -73,12 +73,12 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(
 .hbtn.resume{background:var(--gdim);border-color:var(--grn);color:var(--grn)}
 .hbtn.resume:hover{background:var(--grn);color:var(--bg)}
 
-/* ── Body: 3 columns FULL WIDTH ── */
-.body{display:grid;grid-template-columns:210px 1fr 230px;width:100%;height:100%;overflow:hidden;min-width:0}
+/* ── Body: Equal sidebars (250px) ── */
+.body{display:grid;grid-template-columns:250px 1fr 250px;width:100%;height:100%;overflow:hidden;min-width:0}
 .side{background:var(--panel);overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;min-width:0}
 .side-l{border-right:1px solid var(--b0)}
 .side-r{border-left:1px solid var(--b0)}
-.center{overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.center{overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:16px;min-width:0}
 
 /* ── Sidebar labels ── */
 .slbl{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--lo);padding:12px 12px 5px}
@@ -229,8 +229,8 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .rbtn.ghost:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 
 /* ── Center 2-col grid ── */
-.cgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
-.cright{display:flex;flex-direction:column;gap:14px}
+.cgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.cright{display:flex;flex-direction:column;gap:16px}
 
 /* ── Status strip ── */
 .strip{display:flex;align-items:center;gap:7px;padding:0 14px;background:var(--bg);border-top:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--mid)}
@@ -249,7 +249,7 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 
 /* responsive */
 @media(max-width:1100px){.cgrid{grid-template-columns:1fr}}
-@media(max-width:900px){.body{grid-template-columns:200px 1fr}.side-r{display:none}}
+@media(max-width:900px){.body{grid-template-columns:220px 1fr}.side-r{display:none}}
 @media(max-width:640px){.body{grid-template-columns:1fr}.side-l{display:none}}
 `;
 
@@ -269,7 +269,7 @@ function useLongPress(cb, speed) {
   return{onMouseDown:start,onMouseUp:stop,onMouseLeave:stop,onTouchStart:start,onTouchEnd:stop};
 }
 
-// ─── Diagnostics Panel ────────────────────────────────────────────────────────
+// ─── Diagnostics Panel (Redesigned for Horizontal Full Width) ─────────────────
 function DiagnosticsPanel({rosConnected, rosInstance}){
   const TOPICS=["/joint_commands","/joint_states","/cmd_vel","/diagnostics"];
   const [tlog,setTlog]=useState(Object.fromEntries(TOPICS.map(t=>[t,{count:0,hz:0,last:"-"}])));
@@ -282,21 +282,15 @@ function DiagnosticsPanel({rosConnected, rosInstance}){
     if(!rosConnected||!rosInstance) return;
     const ROSLIB=window.ROSLIB;
     const subs=[];
-
-    // Subscribe to joint_states for diagnostics freq tracking
     const jsSub=new ROSLIB.Topic({ros:rosInstance,name:"/joint_states",messageType:"sensor_msgs/JointState"});
     jsSub.subscribe(()=>bump("/joint_states"));
     subs.push(jsSub);
-
-    // Subscribe to cmd_vel if available
     const cvSub=new ROSLIB.Topic({ros:rosInstance,name:"/cmd_vel",messageType:"geometry_msgs/Twist"});
     cvSub.subscribe(msg=>{
       bump("/cmd_vel");
       if(msg?.linear&&msg?.angular) setVel({linear:msg.linear.x,angular:msg.angular.z});
     });
     subs.push(cvSub);
-
-    // Get node & topic list via rosapi
     try{
       const topicsSrv=new ROSLIB.Service({ros:rosInstance,name:"/rosapi/topics",serviceType:"rosapi/Topics"});
       topicsSrv.callService(new ROSLIB.ServiceRequest({}),res=>{
@@ -307,7 +301,6 @@ function DiagnosticsPanel({rosConnected, rosInstance}){
         if(res?.nodes) setRosInfo(prev=>({...prev,nodes:res.nodes.slice(0,8)}));
       });
     } catch(e){/* rosapi might not be available */}
-
     return()=>subs.forEach(s=>s.unsubscribe());
   },[rosConnected,rosInstance]);
 
@@ -321,35 +314,26 @@ function DiagnosticsPanel({rosConnected, rosInstance}){
     });
   };
 
-  // Draw velocity vector
   useEffect(()=>{
     const canvas=canvasRef.current; if(!canvas) return;
     const ctx=canvas.getContext("2d");
     const W=canvas.width, H=canvas.height, cx=W/2, cy=H/2;
     ctx.clearRect(0,0,W,H);
-    // background
     ctx.fillStyle="#111820"; ctx.fillRect(0,0,W,H);
-    // grid
     ctx.strokeStyle="#1E2D3D"; ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke();
-    // circle guide
     ctx.strokeStyle="#253545"; ctx.beginPath(); ctx.arc(cx,cy,Math.min(cx,cy)-4,0,Math.PI*2); ctx.stroke();
-    // vector
-    const len=vel.linear*60;
-    const ang=vel.angular;
+    const len=vel.linear*60; const ang=vel.angular;
     const tx=cx+len*Math.sin(ang), ty=cy-len*Math.cos(ang);
     ctx.strokeStyle="#00D4FF"; ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(tx,ty); ctx.stroke();
-    // arrowhead
     if(Math.abs(len)>4){
       const a=Math.atan2(ty-cy,tx-cx);
-      ctx.beginPath();
-      ctx.moveTo(tx,ty);
+      ctx.beginPath(); ctx.moveTo(tx,ty);
       ctx.lineTo(tx-8*Math.cos(a-.4),ty-8*Math.sin(a-.4));
       ctx.lineTo(tx-8*Math.cos(a+.4),ty-8*Math.sin(a+.4));
       ctx.closePath(); ctx.fillStyle="#00D4FF"; ctx.fill();
     }
-    // center dot
     ctx.beginPath(); ctx.arc(cx,cy,4,0,Math.PI*2);
     ctx.fillStyle="#00FF9D"; ctx.fill();
   },[vel]);
@@ -357,78 +341,76 @@ function DiagnosticsPanel({rosConnected, rosInstance}){
   const trackedTopics=["/joint_states","/cmd_vel"];
 
   return(
-    <div>
-      {/* Status grid */}
-      <div className="diag-grid">
-        <div className="diag-cell">
-          <div className="diag-lbl">Bridge</div>
-          <div className={`diag-val ${rosConnected?"ok":"err"}`}>{rosConnected?"LIVE":"DOWN"}</div>
-        </div>
-        <div className="diag-cell">
-          <div className="diag-lbl">Nodes</div>
-          <div className="diag-val ok">{rosInfo.nodes.length||"–"}</div>
-        </div>
-        <div className="diag-cell">
-          <div className="diag-lbl">/joint_states</div>
-          <div className={`diag-val ${tlog["/joint_states"].hz>0?"ok":"warn"}`}>{tlog["/joint_states"].hz} Hz</div>
-        </div>
-        <div className="diag-cell">
-          <div className="diag-lbl">/cmd_vel</div>
-          <div className={`diag-val ${tlog["/cmd_vel"].hz>0?"ok":"warn"}`}>{tlog["/cmd_vel"].hz} Hz</div>
+    <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:"1px", background:"var(--b0)"}}>
+      
+      {/* Box 1: Status Grid */}
+      <div style={{background:"var(--card)", padding:"8px", display:"flex", flexDirection:"column", justifyContent:"center"}}>
+        <div className="diag-grid" style={{background:"transparent", gap:"6px"}}>
+          <div className="diag-cell" style={{border:"1px solid var(--b0)", borderRadius:"6px", padding:"8px"}}>
+            <div className="diag-lbl">Bridge</div>
+            <div className={`diag-val ${rosConnected?"ok":"err"}`}>{rosConnected?"LIVE":"DOWN"}</div>
+          </div>
+          <div className="diag-cell" style={{border:"1px solid var(--b0)", borderRadius:"6px", padding:"8px"}}>
+            <div className="diag-lbl">Nodes</div>
+            <div className="diag-val ok">{rosInfo.nodes.length||"–"}</div>
+          </div>
+          <div className="diag-cell" style={{border:"1px solid var(--b0)", borderRadius:"6px", padding:"8px"}}>
+            <div className="diag-lbl">/joint_states</div>
+            <div className={`diag-val ${tlog["/joint_states"].hz>0?"ok":"warn"}`}>{tlog["/joint_states"].hz} Hz</div>
+          </div>
+          <div className="diag-cell" style={{border:"1px solid var(--b0)", borderRadius:"6px", padding:"8px"}}>
+            <div className="diag-lbl">/cmd_vel</div>
+            <div className={`diag-val ${tlog["/cmd_vel"].hz>0?"ok":"warn"}`}>{tlog["/cmd_vel"].hz} Hz</div>
+          </div>
         </div>
       </div>
 
-      {/* Topic bus */}
-      <div style={{borderTop:"1px solid var(--b0)"}}>
-        <div style={{padding:"6px 11px 3px",display:"flex",justifyContent:"space-between"}}>
+      {/* Box 2: Topic Bus */}
+      <div style={{background:"var(--card)", display:"flex", flexDirection:"column"}}>
+        <div style={{padding:"8px 12px 6px", display:"flex", justifyContent:"space-between", borderBottom:"1px solid var(--b0)"}}>
           <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)",letterSpacing:".1em",textTransform:"uppercase"}}>Topic Bus</span>
           <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>Msgs · Hz · Last</span>
         </div>
-        {trackedTopics.map(t=>(
-          <div className="topic-row" key={t}>
-            <span className="topic-name">{t}</span>
-            <div className="topic-meta">
-              <span className="topic-cnt">{tlog[t].count}</span>
-              <span className="topic-hz">{tlog[t].hz}Hz</span>
-              <span className="topic-time">{tlog[t].last}</span>
+        <div style={{flex:1, overflowY:"auto"}}>
+          {trackedTopics.map(t=>(
+            <div className="topic-row" key={t} style={{borderTop:"none", borderBottom:"1px solid var(--b0)", padding:"8px 12px"}}>
+              <span className="topic-name">{t}</span>
+              <div className="topic-meta">
+                <span className="topic-cnt">{tlog[t].count}</span>
+                <span className="topic-hz" style={{minWidth:"32px", textAlign:"right"}}>{tlog[t].hz}Hz</span>
+                <span className="topic-time" style={{minWidth:"45px", textAlign:"right"}}>{tlog[t].last}</span>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Vector viz */}
-      <div className="vec-canvas-wrap" style={{borderTop:"1px solid var(--b0)"}}>
-        <div>
-          <div style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:4}}>Velocity Vector</div>
-          <canvas ref={canvasRef} width={90} height={90} style={{borderRadius:6,display:"block"}}/>
-        </div>
-        <div className="vec-stats">
-          <div className="vstat">
-            <div className="vstat-lbl">Linear</div>
-            <span style={{color:"var(--cyan)"}}>{vel.linear.toFixed(3)}</span>
-            <span style={{color:"var(--lo)",fontSize:9}}> m/s</span>
-          </div>
-          <div className="vstat">
-            <div className="vstat-lbl">Angular</div>
-            <span style={{color:"var(--amb)"}}>{vel.angular.toFixed(3)}</span>
-            <span style={{color:"var(--lo)",fontSize:9}}> rad/s</span>
-          </div>
-          <div className="vstat" style={{marginTop:4}}>
-            <div className="vstat-lbl">Active topics</div>
-            <span style={{color:"var(--grn)"}}>{rosInfo.topics.length||"–"}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Discovered nodes */}
-      {rosInfo.nodes.length>0&&(
-        <div style={{borderTop:"1px solid var(--b0)",padding:"5px 0"}}>
-          <div style={{padding:"4px 11px 2px",fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)",letterSpacing:".1em",textTransform:"uppercase"}}>ROS Nodes</div>
-          {rosInfo.nodes.map(n=>(
-            <div key={n} style={{padding:"3px 11px",fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",borderTop:"1px solid var(--b0)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{n}</div>
           ))}
+          {rosInfo.nodes.length > 0 && (
+             <div style={{padding:"8px 12px"}}>
+                <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)",letterSpacing:".1em",textTransform:"uppercase"}}>Detected Nodes</span>
+                <div style={{display:"flex", gap:"6px", flexWrap:"wrap", marginTop:"4px"}}>
+                  {rosInfo.nodes.slice(0,4).map(n=><span key={n} style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",background:"var(--panel)",padding:"2px 6px",borderRadius:"4px",border:"1px solid var(--b0)"}}>{n.split('/').pop()||n}</span>)}
+                </div>
+             </div>
+          )}
         </div>
-      )}
+      </div>
+
+      {/* Box 3: Vector & Kinematics */}
+      <div style={{background:"var(--card)", display:"flex", alignItems:"center", padding:"12px"}}>
+        <div style={{flex:1}}>
+          <div style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:8}}>Velocity Vector</div>
+          <canvas ref={canvasRef} width={80} height={80} style={{borderRadius:6,display:"block",border:"1px solid var(--b0)"}}/>
+        </div>
+        <div className="vec-stats" style={{flex:1}}>
+          <div className="vstat">
+            <div className="vstat-lbl">Linear X</div>
+            <span style={{color:"var(--cyan)", fontSize:"12px"}}>{vel.linear.toFixed(3)}</span><span style={{color:"var(--lo)",fontSize:9}}> m/s</span>
+          </div>
+          <div className="vstat" style={{marginTop:8}}>
+            <div className="vstat-lbl">Angular Z</div>
+            <span style={{color:"var(--amb)", fontSize:"12px"}}>{vel.angular.toFixed(3)}</span><span style={{color:"var(--lo)",fontSize:9}}> rad/s</span>
+          </div>
+        </div>
+      </div>
+
     </div>
   );
 }
@@ -629,8 +611,9 @@ export default function App(){
 
           {/* ── CENTER ── */}
           <main className="center">
+            
+            {/* Top Row: Joint Controls & Cartesian/Log */}
             <div className="cgrid">
-
               {/* Joint Controls */}
               <div className="card">
                 <div className="chdr"><span className="ctitle">Joint Controls</span><span className="ctag">sensor_msgs/JointState</span></div>
@@ -668,9 +651,8 @@ export default function App(){
                 })}
               </div>
 
-              {/* Right column */}
+              {/* Cartesian & Log Column */}
               <div className="cright">
-
                 {/* Cartesian */}
                 <div className="card">
                   <div className="chdr"><span className="ctitle">Cartesian Jog</span><span className="ctag">Hold=continuous · {JOG_DEG[speed]}°/tick</span></div>
@@ -699,15 +681,15 @@ export default function App(){
                     {logs.map((l,i)=><div className="lent" key={i}><span className="ltm">{l.time}</span><span className={`lmsg ${l.type}`}>{l.msg}</span></div>)}
                   </div>
                 </div>
-
-                {/* Diagnostics */}
-                <div className="card">
-                  <div className="chdr"><span className="ctitle">ROS2 Diagnostics</span><span className="ctag">rosbridge</span></div>
-                  <DiagnosticsPanel rosConnected={conn==="connected"} rosInstance={rosRef.current}/>
-                </div>
-
               </div>
             </div>
+
+            {/* Bottom Row: Full-width Horizontal Diagnostics */}
+            <div className="card">
+              <div className="chdr"><span className="ctitle">ROS2 Diagnostics</span><span className="ctag">rosbridge</span></div>
+              <DiagnosticsPanel rosConnected={conn==="connected"} rosInstance={rosRef.current}/>
+            </div>
+
           </main>
 
           {/* ── RIGHT SIDEBAR ── */}
@@ -756,7 +738,7 @@ export default function App(){
           <div className={`sdot ${conn==="connected"?"ok":conn==="connecting"?"warn":"err"}`}/>
           <span>ros2 bridge</span><span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v1.4 · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v1.5 · {ts()}</span>
         </div>
       </div>
     </>
