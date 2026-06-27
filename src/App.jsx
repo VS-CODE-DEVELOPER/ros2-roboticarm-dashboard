@@ -102,6 +102,7 @@ const styles = `
 
 /* ── Main Layout ── */
   .main {
+  /* Force Update Trigger */
     display: grid;
     /* FLUID WIDTHS: Sidebars take up to 22% of the screen, the center perfectly fills the rest */
     grid-template-columns: minmax(280px, 22vw) 1fr minmax(280px, 22vw); 
