@@ -2,19 +2,19 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
-  { id:"joint_1", label:"Base Rotation", min:-180, max:180,  unit:"°", color:"#00D4FF" },
-  { id:"joint_2", label:"Shoulder",      min:-90,  max:90,   unit:"°", color:"#00FF9D" },
-  { id:"joint_3", label:"Elbow",         min:-135, max:135,  unit:"°", color:"#FFB800" },
-  { id:"joint_4", label:"Wrist Pitch",   min:-90,  max:90,   unit:"°", color:"#FF6B35" },
-  { id:"joint_5", label:"Wrist Roll",    min:-180, max:180,  unit:"°", color:"#C77DFF" },
-  { id:"joint_6", label:"Gripper",       min:0,    max:100,  unit:"%", color:"#FF4D6D" },
+  { id:"joint_1", label:"Base Rotation", short:"J1", min:-180, max:180,  unit:"°", color:"#00D4FF" },
+  { id:"joint_2", label:"Shoulder",      short:"J2", min:-90,  max:90,   unit:"°", color:"#00FF9D" },
+  { id:"joint_3", label:"Elbow",         short:"J3", min:-135, max:135,  unit:"°", color:"#FFB800" },
+  { id:"joint_4", label:"Wrist Pitch",   short:"J4", min:-90,  max:90,   unit:"°", color:"#FF6B35" },
+  { id:"joint_5", label:"Wrist Roll",    short:"J5", min:-180, max:180,  unit:"°", color:"#C77DFF" },
+  { id:"joint_6", label:"Gripper",       short:"J6", min:0,    max:100,  unit:"%", color:"#FF4D6D" },
 ];
 const LIMIT_WARN = 5;
-const PRESETS = [
-  { name:"Home",       icon:"⌂", values:{joint_1:0,  joint_2:0,   joint_3:0,   joint_4:0,  joint_5:0, joint_6:0  }},
-  { name:"Grab Ready", icon:"✦", values:{joint_1:0,  joint_2:45,  joint_3:-90, joint_4:45, joint_5:0, joint_6:0  }},
-  { name:"Release",    icon:"◎", values:{joint_1:0,  joint_2:45,  joint_3:-90, joint_4:45, joint_5:0, joint_6:100}},
-  { name:"Stow",       icon:"▣", values:{joint_1:0,  joint_2:-90, joint_3:135, joint_4:-45,joint_5:0, joint_6:0  }},
+const DEFAULT_PRESETS = [
+  { name:"Home",       icon:"⌂", values:{joint_1:0,  joint_2:0,   joint_3:0,   joint_4:0,  joint_5:0, joint_6:0  }, builtin:true },
+  { name:"Grab Ready", icon:"✦", values:{joint_1:0,  joint_2:45,  joint_3:-90, joint_4:45, joint_5:0, joint_6:0  }, builtin:true },
+  { name:"Release",    icon:"◎", values:{joint_1:0,  joint_2:45,  joint_3:-90, joint_4:45, joint_5:0, joint_6:100}, builtin:true },
+  { name:"Stow",       icon:"▣", values:{joint_1:0,  joint_2:-90, joint_3:135, joint_4:-45,joint_5:0, joint_6:0  }, builtin:true },
 ];
 const SPEEDS   = ["Slow","Normal","Fast"];
 const JOG_MS   = [120, 60, 30];
@@ -29,6 +29,23 @@ const fillSt   = (val,min,max,col) => {
   return {left:`${Math.min(z,vp)}%`,width:`${Math.abs(z-vp)}%`,background:col};
 };
 
+// ─── localStorage — wrapped safely ────────────────────────────────────────
+const safeGet = (key, fallback) => {
+  try { const v = window.localStorage.getItem(key); return v !== null ? v : fallback; }
+  catch { return fallback; }
+};
+const safeSet = (key, value) => {
+  try { window.localStorage.setItem(key, value); } catch {}
+};
+const initialUrl = () => {
+  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+  return safeGet("armctrl_url", `ws://${host}:9090`);
+};
+const initialSpeed = () => {
+  const n = Number(safeGet("armctrl_speed", "1"));
+  return Number.isFinite(n) && n >= 0 && n <= 2 ? n : 1;
+};
+
 // ─── CSS ─────────────────────────────────────────────────────────────────────
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap');
@@ -41,27 +58,16 @@ const CSS = `
   --red:#FF3B3B;--rdim:rgba(255,59,59,.15);
   --grn:#00FF9D;--gdim:rgba(0,255,157,.1);
   --amb:#FFB800;--adim:rgba(255,184,0,.12);
+  --purple:#C77DFF;--pdim:rgba(199,125,255,.12);
   --r:7px;--rl:11px;
   --hdr:48px;--strip:24px;
 }
 html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--hi);font-family:'Inter',sans-serif;font-size:12px;line-height:1.4}
 
-/* ══════════════════════════════════════════════════════
-   SHELL — fixed 3-row grid, never scrolls
-══════════════════════════════════════════════════════ */
-.shell{
-  display:grid;
-  grid-template-rows:var(--hdr) 1fr var(--strip);
-  width:100vw;height:100vh;
-  overflow:hidden;
-}
+.shell{display:grid;grid-template-rows:var(--hdr) 1fr var(--strip);width:100vw;height:100vh;overflow:hidden}
 
 /* ── Header ── */
-.hdr{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:0 14px;background:var(--panel);border-bottom:1px solid var(--b0);
-  z-index:100;overflow:hidden;
-}
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--b0);z-index:100;overflow:hidden}
 .brand{display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;letter-spacing:.05em;color:var(--cyan);flex-shrink:0}
 .bdot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 7px var(--cyan);animation:blink 2s infinite}
 .bdot.off{background:var(--lo);box-shadow:none;animation:none}
@@ -72,11 +78,14 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .hdr-center{display:flex;align-items:center;gap:8px;flex:1;justify-content:center}
 .hdr-r{display:flex;align-items:center;gap:8px;flex-shrink:0}
 
-/* Connection URL inline in header */
 .hdr-url-wrap{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--b0);border-radius:var(--r);padding:3px 8px}
 .hdr-url-label{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
 .hdr-url-input{background:transparent;border:none;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;outline:none;width:220px}
 .hdr-url-input:disabled{opacity:.6}
+
+.mode-pill{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.mode-pill.run{background:var(--cdim);color:var(--cyan)}
+.mode-pill.teach{background:var(--pdim);color:var(--purple)}
 
 .badge{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.07em;text-transform:uppercase;border:1px solid transparent;transition:all .3s;white-space:nowrap}
 .badge.connected{color:var(--grn);border-color:var(--grn);background:var(--gdim)}
@@ -97,101 +106,66 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .hbtn.resume{background:var(--gdim);border-color:var(--grn);color:var(--grn)}
 .hbtn.resume:hover:not(:disabled){background:var(--grn);color:var(--bg)}
 
-/* ══════════════════════════════════════════════════════
-   BODY — 3 columns, each is a fixed-height non-scrolling column
-   Left sidebar:  240px
-   Center:        1fr  (fills remaining space)
-   Right sidebar: 220px
-══════════════════════════════════════════════════════ */
-.body{
-  display:grid;
-  grid-template-columns:240px 1fr 220px;
-  overflow:hidden;width:100%;height:100%;
-}
-
-/* Each side is itself a grid of sections that fill height exactly */
-.side{background:var(--panel);overflow:hidden;display:flex;flex-direction:column}
+/* ── Body ── */
+.body{display:grid;grid-template-columns:240px 1fr 220px;overflow:hidden;width:100%;height:100%}
+.side{background:var(--panel);overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .side-l{border-right:1px solid var(--b0)}
 .side-r{border-left:1px solid var(--b0)}
-
-/* Section label */
 .slbl{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--lo);padding:10px 12px 4px;flex-shrink:0}
+.sl-viz{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 
-/* ── Left sidebar sections ── */
-.sl-speed{flex-shrink:0}
-.sl-presets{flex-shrink:0}
-.sl-actions{flex-shrink:0}
-.sl-viz{flex:1;overflow:hidden;display:flex;flex-direction:column}
-
-/* ── Speed ── */
 .spd-row{display:flex;padding:5px 10px;gap:4px}
-.spd{flex:1;padding:4px;background:var(--panel);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s}
+.spd{flex:1;padding:5px 2px;background:var(--panel);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}
 .spd.on{background:var(--cdim);border-color:var(--cyan);color:var(--cyan)}
 .spd:hover:not(.on){border-color:var(--b1);color:var(--hi)}
+.spd-rate{font-family:'JetBrains Mono',monospace;font-size:7px;color:var(--lo)}
+.spd.on .spd-rate{color:var(--cyan)}
 
-/* ── Presets ── */
 .pgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:5px 10px}
-.pbtn{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 4px;background:var(--panel);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);cursor:pointer;font-size:9px;font-weight:500;transition:all .15s}
+.pbtn{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 4px;background:var(--panel);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);cursor:pointer;font-size:9px;font-weight:500;transition:all .15s}
 .pbtn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .pbtn:disabled{opacity:.3;cursor:not-allowed}
 .pbtn .ico{font-size:12px}
+.pbtn.add{border-style:dashed;color:var(--lo)}
+.pbtn.add:hover:not(:disabled){border-color:var(--grn);color:var(--grn);background:var(--gdim)}
+.pbtn-del{position:absolute;top:-5px;right:-5px;width:14px;height:14px;border-radius:50%;background:var(--red);color:#fff;font-size:8px;line-height:14px;text-align:center;border:1px solid var(--bg);cursor:pointer}
 
-/* ── Action row ── */
 .act-row{display:flex;gap:4px;padding:5px 10px}
 .abtn{flex:1;padding:5px;background:transparent;border:1px solid var(--b1);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer;transition:all .15s;text-align:center}
 .abtn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .abtn:disabled{opacity:.3;cursor:not-allowed}
 
-/* ── Arm viz fills remaining left sidebar space ── */
-.vizwrap{flex:1;overflow:hidden;padding:4px 10px 8px;display:flex;flex-direction:column}
+.pwr-row{display:flex;align-items:center;justify-content:space-between;padding:6px 10px 8px}
+.pwr-label{display:flex;flex-direction:column;gap:1px}
+.pwr-title{font-size:10px;font-weight:600;color:var(--hi)}
+.pwr-sub{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo)}
+.tgl{width:38px;height:20px;border-radius:10px;background:var(--b1);position:relative;cursor:pointer;border:none;flex-shrink:0}
+.tgl.on{background:var(--grn)}
+.tgl-thumb{width:16px;height:16px;border-radius:50%;background:var(--hi);position:absolute;top:2px;left:2px;transition:left .12s}
+.tgl.on .tgl-thumb{left:20px;background:#04160D}
+.tgl:disabled{opacity:.4;cursor:not-allowed}
+
+.vizwrap{flex:1;overflow:hidden;padding:4px 10px 8px;display:flex;flex-direction:column;min-height:0}
 .vizleg{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-top:4px;flex-shrink:0}
 .vli{display:flex;align-items:center;gap:3px;font-size:9px;color:var(--mid)}
 .vld{width:8px;height:3px;border-radius:2px}
 
-/* ══════════════════════════════════════════════════════
-   CENTER — two rows: controls (fills) + diagnostics bar (fixed)
-══════════════════════════════════════════════════════ */
-.center{
-  display:grid;
-  grid-template-rows:1fr 180px;
-  overflow:hidden;min-width:0;
-}
-
-/* Controls row: joint col + right col side by side, NO scroll */
-.ctrl-row{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  overflow:hidden;
-  gap:0;
-}
-
-/* Each control column is fixed, no overflow */
-.ctrl-col{
-  overflow:hidden;
-  display:flex;
-  flex-direction:column;
-  border-right:1px solid var(--b0);
-}
+/* ── Center ── */
+.center{display:grid;grid-template-rows:1fr 180px;overflow:hidden;min-width:0;min-height:0}
+.ctrl-row{display:grid;grid-template-columns:1fr 1fr;overflow:hidden;gap:0;min-height:0}
+.ctrl-col{overflow:hidden;display:flex;flex-direction:column;border-right:1px solid var(--b0);min-height:0}
 .ctrl-col:last-child{border-right:none}
 
-/* Col header */
-.col-hdr{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:8px 12px;border-bottom:1px solid var(--b0);
-  background:rgba(255,255,255,.01);flex-shrink:0;
-}
+.col-hdr{display:flex;align-items:center;justify-content:space-between;padding:6px 12px;border-bottom:1px solid var(--b0);background:rgba(255,255,255,.01);flex-shrink:0}
 .col-title{font-size:10px;font-weight:700;color:var(--hi);letter-spacing:.05em;text-transform:uppercase}
 .col-tag{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--mid);background:var(--panel);padding:2px 6px;border-radius:4px;border:1px solid var(--b0)}
+.col-tabs{display:flex;gap:3px}
+.col-tab{padding:3px 9px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;cursor:pointer;border:1px solid var(--b0);background:var(--panel);color:var(--mid)}
+.col-tab.on{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
+.col-tab.purple.on{border-color:var(--purple);color:var(--purple);background:var(--pdim)}
 
-/* Joint rows fill available height evenly */
-.joints-body{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.jrow{
-  flex:1;
-  padding:0 12px;
-  border-bottom:1px solid var(--b0);
-  display:flex;flex-direction:column;justify-content:center;
-  transition:background .15s;min-height:0;
-}
+.joints-body{flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.jrow{flex:1;padding:0 12px;border-bottom:1px solid var(--b0);display:flex;flex-direction:column;justify-content:center;transition:background .15s;min-height:0}
 .jrow:last-child{border-bottom:none}
 .jrow:hover{background:var(--hover)}
 .jrow.near{animation:fw 1.2s ease-in-out infinite;border-left:3px solid var(--amb)}
@@ -232,11 +206,8 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .sbtn:active:not([disabled]){transform:scale(.9)}
 .sbtn[disabled]{opacity:.3;cursor:not-allowed}
 
-/* Right control col: cartesian + log stacked, filling height */
-.right-col-inner{flex:1;display:grid;grid-template-rows:auto 1fr;overflow:hidden}
-
-/* Cartesian section */
-.cart-body{overflow:hidden;display:flex;flex-direction:column}
+.right-col-inner{flex:1;display:grid;grid-template-rows:auto 1fr;overflow:hidden;min-height:0}
+.cart-body{overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .jax{padding:5px 10px;border-bottom:1px solid var(--b0);flex-shrink:0}
 .axlbl{font-size:9px;color:var(--mid);margin-bottom:3px;display:flex;align-items:center;gap:4px}
 .axdot{width:4px;height:4px;border-radius:50%;flex-shrink:0}
@@ -251,10 +222,32 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .zero-btn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .zero-btn:disabled{opacity:.3;cursor:not-allowed}
 
-/* Log fills remaining right col space */
-.log-section{flex:1;overflow:hidden;display:flex;flex-direction:column;border-top:1px solid var(--b0)}
+/* ── Teach Mode panel ── */
+.teach-body{overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.teach-status{margin:6px 10px;padding:6px 8px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:600;display:flex;align-items:center;gap:6px;flex-shrink:0}
+.teach-status.on{background:var(--pdim);border:1px solid var(--purple);color:var(--purple)}
+.teach-status.off{background:var(--gdim);border:1px solid var(--grn);color:var(--grn)}
+.record-btn{margin:0 10px 6px;padding:9px;background:var(--rdim);border:1px solid var(--red);border-radius:var(--r);color:var(--red);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.05em;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;flex-shrink:0}
+.record-btn:hover:not(:disabled){background:var(--red);color:#fff}
+.record-btn:disabled{opacity:.3;cursor:not-allowed}
+.record-btn .rdot{width:8px;height:8px;border-radius:50%;background:currentColor}
+.wp-scroll{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;border-top:1px solid var(--b0);min-height:0}
+.wp-row{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--b0);font-family:'JetBrains Mono',monospace}
+.wp-row:hover{background:var(--hover)}
+.wp-name{font-size:9px;font-weight:700;color:var(--hi)}
+.wp-vals{font-size:7px;color:var(--lo);margin-top:1px}
+.wp-del{background:transparent;border:1px solid var(--b1);border-radius:4px;color:var(--mid);font-size:8px;padding:3px 7px;cursor:pointer}
+.wp-del:hover{border-color:var(--red);color:var(--red)}
+.wp-empty{padding:16px 10px;text-align:center;font-size:9px;color:var(--lo)}
+.play-row{display:flex;gap:4px;padding:6px 10px;border-top:1px solid var(--b0);flex-shrink:0}
+.pbtn2{flex:1;padding:6px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.05em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
+.pbtn2.primary{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
+.pbtn2.danger{border-color:var(--red);color:var(--red);background:var(--rdim)}
+.pbtn2:disabled{opacity:.3;cursor:not-allowed}
+
+.log-section{flex:1;overflow:hidden;display:flex;flex-direction:column;border-top:1px solid var(--b0);min-height:0}
 .log-hdr{display:flex;align-items:center;justify-content:space-between;padding:6px 11px;border-bottom:1px solid var(--b0);background:rgba(255,255,255,.01);flex-shrink:0}
-.logwrap{flex:1;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:9px;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;display:flex;flex-direction:column-reverse}
+.logwrap{flex:1;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:9px;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;display:flex;flex-direction:column-reverse;min-height:0}
 .lent{display:flex;gap:7px;padding:3px 10px;border-top:1px solid var(--b0);align-items:baseline;flex-shrink:0}
 .lent:hover{background:var(--hover)}
 .ltm{color:var(--lo);flex-shrink:0}
@@ -264,20 +257,14 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .lmsg.warn{color:var(--amb)}
 .lmsg.error{color:var(--red)}
 
-/* ── Diagnostics strip (fixed height bottom of center) ── */
-.diag-strip{
-  display:grid;
-  grid-template-columns:auto 1fr 1fr auto;
-  border-top:2px solid var(--b0);
-  overflow:hidden;
-  height:180px;
-}
-.diag-sec{border-right:1px solid var(--b0);overflow:hidden;display:flex;flex-direction:column}
+/* ── Diagnostics strip ── */
+.diag-strip{display:grid;grid-template-columns:auto 1fr 1fr auto;border-top:2px solid var(--b0);overflow:hidden;height:180px;min-height:0}
+.diag-sec{border-right:1px solid var(--b0);overflow:hidden;display:flex;flex-direction:column;min-height:0}
 .diag-sec:last-child{border-right:none}
 .diag-sec-hdr{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--b0);background:rgba(255,255,255,.01);flex-shrink:0}
 .diag-sec-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lo)}
-.diag-kpi{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0);flex:1}
-.dkpi{background:var(--card);padding:6px 10px;display:flex;flex-direction:column;justify-content:center}
+.diag-kpi{display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:1fr;gap:1px;background:var(--b0);flex:1;min-height:0;overflow:hidden}
+.dkpi{background:var(--card);padding:6px 10px;display:flex;flex-direction:column;justify-content:center;min-height:0;overflow:hidden}
 .dkpi-lbl{font-size:8px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:1px}
 .dkpi-val{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--hi);line-height:1}
 .dkpi-val.ok{color:var(--grn)}
@@ -289,9 +276,21 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .topic-meta{display:flex;gap:8px}
 .topic-hz{color:var(--grn)}
 .topic-cnt{color:var(--lo)}
-.topic-scroll{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b0) transparent}
+.topic-scroll{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;min-height:0}
 
-/* ── Right sidebar: all sections fill height exactly ── */
+.rt-row{display:flex;align-items:center;gap:6px;padding:5px 10px;flex-shrink:0}
+.rt-taglabel{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo);flex-shrink:0}
+.rt-select{flex:1;background:var(--panel);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:9px;padding:3px 5px}
+.rt-btn{padding:4px 9px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;cursor:pointer;border:1px solid var(--cyan);color:var(--cyan);background:var(--cdim)}
+.rt-btn.stop{border-color:var(--red);color:var(--red);background:var(--rdim)}
+.rt-btn:disabled{opacity:.3;cursor:not-allowed}
+.rt-scroll{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;min-height:0}
+.rt-line{display:flex;align-items:center;gap:6px;padding:2px 10px;font-family:'JetBrains Mono',monospace;font-size:8px}
+.rt-bar-track{flex:1;height:4px;background:var(--b1);border-radius:2px;overflow:hidden}
+.rt-bar-fill{height:100%;border-radius:2px}
+.rt-empty{padding:10px;text-align:center;font-size:9px;color:var(--lo)}
+
+/* ── Right sidebar ── */
 .sr-telem{flex-shrink:0}
 .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0)}
 .tcell{background:var(--card);padding:8px 10px}
@@ -301,30 +300,25 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .tval.warn{color:var(--amb)}
 .tval.err{color:var(--red)}
 
-.sr-fb{flex:1;overflow:hidden;display:flex;flex-direction:column}
-.fb-body{flex:1;overflow:hidden;display:flex;flex-direction:column}
-.fbrow{flex:1;padding:0 10px;border-bottom:1px solid var(--b0);display:flex;flex-direction:column;justify-content:center;min-height:0}
+.fb-body{flex:1;overflow-y:auto;display:flex;flex-direction:column;min-height:0;scrollbar-width:thin;scrollbar-color:var(--b0) transparent}
+.fbrow{padding:5px 10px;border-bottom:1px solid var(--b0);flex-shrink:0}
 .fbrow:last-child{border-bottom:none}
 .fbtop{display:flex;justify-content:space-between;margin-bottom:1px}
 .fbbot{display:flex;justify-content:space-between}
 
-.sr-emg{flex-shrink:0;padding:8px 10px;display:flex;flex-direction:column;gap:5px;border-top:1px solid var(--b0)}
-.emg-btn{padding:10px;border-radius:var(--r);font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;letter-spacing:.05em;cursor:pointer;transition:all .15s;border:1.5px solid transparent;text-align:center}
-.emg-btn:active{transform:scale(.97)}
-.emg-btn:disabled{opacity:.35;cursor:not-allowed}
-.emg-btn.danger{background:var(--rdim);color:var(--red);border-color:var(--red)}
-.emg-btn.danger:hover:not(:disabled){background:var(--red);color:#fff}
-.emg-btn.resume{background:var(--gdim);color:var(--grn);border-color:var(--grn)}
-.emg-btn.resume:hover:not(:disabled){background:var(--grn);color:var(--bg)}
+.test-summary{margin:8px 10px;padding:8px;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);flex-shrink:0}
+.test-summary-title{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo);letter-spacing:.08em;margin-bottom:5px;text-transform:uppercase}
+.test-summary-row{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 0;color:var(--mid)}
+.test-summary-row b{color:var(--hi)}
+.test-summary-row.warn b{color:var(--amb)}
+.test-summary-row.ok b{color:var(--grn)}
 
-/* ── Status strip ── */
 .strip{display:flex;align-items:center;gap:7px;padding:0 12px;background:var(--bg);border-top:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--mid);overflow:hidden}
 .sdot{width:5px;height:5px;border-radius:50%;background:var(--lo);flex-shrink:0}
 .sdot.ok{background:var(--grn);box-shadow:0 0 5px var(--grn)}
 .sdot.warn{background:var(--amb)}
 .sdot.err{background:var(--red);animation:blink .8s infinite}
 
-/* ── Emergency overlay ── */
 .estop-ov{position:fixed;inset:0;background:rgba(255,59,59,.07);border:3px solid var(--red);pointer-events:none;z-index:999;animation:ep .5s ease-in-out infinite alternate}
 @keyframes ep{from{opacity:.5}to{opacity:1}}
 .estop-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--red);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:.1em;padding:5px 22px;border-radius:0 0 8px 8px;z-index:1000}
@@ -332,15 +326,69 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-thumb{background:var(--b0);border-radius:2px}
 
-/* future Foxglove 3D panel placeholder */
-.foxglove-placeholder{
-  display:flex;flex-direction:column;align-items:center;justify-content:center;
-  height:100%;background:var(--card);border-radius:var(--rl);
-  border:1px dashed var(--b1);color:var(--lo);gap:6px;
-  font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.08em;
-}
-.foxglove-placeholder .fg-icon{font-size:28px;opacity:.4}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:2000}
+.modal{background:var(--panel);border:1px solid var(--b0);border-radius:var(--rl);padding:18px;width:300px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.modal-title{font-size:13px;font-weight:700;margin-bottom:6px;color:var(--hi)}
+.modal-body{font-size:11px;color:var(--mid);margin-bottom:14px;line-height:1.5}
+.modal-actions{display:flex;gap:6px}
+.modal-btn{flex:1;padding:8px;border-radius:var(--r);font-size:10px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
+.modal-btn.confirm{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
+.modal-btn.danger{border-color:var(--red);color:var(--red);background:var(--rdim)}
+
+.fg-link{margin:4px 10px 5px;padding:5px 8px;background:var(--pdim);border:1px solid var(--purple);border-radius:5px;color:var(--purple);font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.06em;text-align:center;cursor:pointer;text-transform:uppercase}
+.fg-link:hover{background:var(--purple);color:#04160D}
+.fg-link:disabled{opacity:.3;cursor:not-allowed}
+
+/* ── Foxglove overlay — non-blocking, doesn't touch the base grid ── */
+.fgmodal-bg{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:3000}
+.fgmodal{background:var(--panel);border:1px solid var(--purple);border-radius:var(--rl);width:90vw;height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.fgmodal-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--b0);background:var(--card);flex-shrink:0}
+.fgmodal-title{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--purple)}
+.fgmodal-tab{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--cyan);text-decoration:none;padding:4px 9px;border:1px solid var(--cyan);border-radius:5px}
+.fgmodal-tab:hover{background:var(--cdim)}
+.fgmodal-close{width:24px;height:24px;border-radius:5px;background:transparent;border:1px solid var(--b1);color:var(--mid);cursor:pointer;font-size:12px}
+.fgmodal-close:hover{border-color:var(--red);color:var(--red)}
+.fgmodal-frame{flex:1;border:none;width:100%;background:#000}
+.fgmodal-note{padding:5px 14px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);border-top:1px solid var(--b0);flex-shrink:0}
 `;
+
+// ─── Confirm dialog ─────────────────────────────────────────────────────────
+function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div className="modal-bg" onClick={onCancel}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div className="modal-title">{title}</div>
+        <div className="modal-body">{body}</div>
+        <div className="modal-actions">
+          <button className="modal-btn" onClick={onCancel}>Cancel</button>
+          <button className={`modal-btn ${danger?"danger":"confirm"}`} onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Foxglove overlay — additive only, sits on top, never alters the grid ────
+function FoxgloveModal({ open, url, onClose }) {
+  if (!open) return null;
+  const fgUrl = `https://app.foxglove.dev/?ds=rosbridge-websocket&ds.url=${encodeURIComponent(url)}`;
+  return (
+    <div className="fgmodal-bg" onClick={onClose}>
+      <div className="fgmodal" onClick={e=>e.stopPropagation()}>
+        <div className="fgmodal-hdr">
+          <span className="fgmodal-title">🔮 FOXGLOVE 3D VIEW</span>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <a href={fgUrl} target="_blank" rel="noopener noreferrer" className="fgmodal-tab">Open in New Tab ↗</a>
+            <button className="fgmodal-close" onClick={onClose}>✕</button>
+          </div>
+        </div>
+        <iframe src={fgUrl} title="Foxglove" className="fgmodal-frame" />
+        <div className="fgmodal-note">If this stays blank, Foxglove is blocking iframe embedding — use "Open in New Tab" instead.</div>
+      </div>
+    </div>
+  );
+}
 
 // ─── Long-press hook ──────────────────────────────────────────────────────────
 function useLongPress(cb, speed) {
@@ -411,14 +459,12 @@ function ArmViz({joints,style}){
   );
 }
 
-// ─── Diagnostics strip ────────────────────────────────────────────────────────
-function DiagPanel({rosConnected, rosInstance}){
+// ─── Diagnostics telemetry hook ───────────────────────────────────────────────
+function useDiagnostics(rosConnected, rosInstance){
   const TRACKED=["/joint_states","/cmd_vel"];
   const [tlog,setTlog]=useState(Object.fromEntries(TRACKED.map(t=>[t,{count:0,hz:0,last:"-"}])));
-  const [vel,setVel]=useState({linear:0,angular:0});
   const [info,setInfo]=useState({topics:[],nodes:[]});
   const lastT=useRef({});
-  const canvasRef=useRef(null);
 
   useEffect(()=>{
     if(!rosConnected||!rosInstance) return;
@@ -427,10 +473,7 @@ function DiagPanel({rosConnected, rosInstance}){
     jsSub.subscribe(()=>bump("/joint_states"));
     subs.push(jsSub);
     const cvSub=new ROSLIB.Topic({ros:rosInstance,name:"/cmd_vel",messageType:"geometry_msgs/Twist"});
-    cvSub.subscribe(msg=>{
-      bump("/cmd_vel");
-      if(msg?.linear&&msg?.angular) setVel({linear:msg.linear.x,angular:msg.angular.z});
-    });
+    cvSub.subscribe(()=>bump("/cmd_vel"));
     subs.push(cvSub);
     try{
       new ROSLIB.Service({ros:rosInstance,name:"/rosapi/topics",serviceType:"rosapi/Topics"})
@@ -450,121 +493,7 @@ function DiagPanel({rosConnected, rosInstance}){
       return{...prev,[name]:{count:prev[name].count+1,hz:hz||prev[name].hz,last:ts()}};
     });
   };
-
-  useEffect(()=>{
-    const canvas=canvasRef.current; if(!canvas) return;
-    const ctx=canvas.getContext("2d"), W=canvas.width, H=canvas.height, cx=W/2, cy=H/2;
-    ctx.clearRect(0,0,W,H);
-    ctx.fillStyle="#111820"; ctx.fillRect(0,0,W,H);
-    ctx.strokeStyle="#1E2D3D"; ctx.lineWidth=1;
-    ctx.beginPath();ctx.moveTo(0,cy);ctx.lineTo(W,cy);ctx.moveTo(cx,0);ctx.lineTo(cx,H);ctx.stroke();
-    ctx.strokeStyle="#253545";ctx.beginPath();ctx.arc(cx,cy,Math.min(cx,cy)-3,0,Math.PI*2);ctx.stroke();
-    const len=vel.linear*55, ang=vel.angular;
-    const tx=cx+len*Math.sin(ang), ty=cy-len*Math.cos(ang);
-    ctx.strokeStyle="#00D4FF";ctx.lineWidth=2;
-    ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(tx,ty);ctx.stroke();
-    if(Math.abs(len)>4){
-      const a=Math.atan2(ty-cy,tx-cx);
-      ctx.beginPath();ctx.moveTo(tx,ty);
-      ctx.lineTo(tx-7*Math.cos(a-.4),ty-7*Math.sin(a-.4));
-      ctx.lineTo(tx-7*Math.cos(a+.4),ty-7*Math.sin(a+.4));
-      ctx.closePath();ctx.fillStyle="#00D4FF";ctx.fill();
-    }
-    ctx.beginPath();ctx.arc(cx,cy,4,0,Math.PI*2);ctx.fillStyle="#00FF9D";ctx.fill();
-  },[vel]);
-
-  const M={fontFamily:"JetBrains Mono",monospace:true};
-
-  return(
-    <div className="diag-strip">
-
-      {/* ① Status KPIs */}
-      <div className="diag-sec" style={{minWidth:190}}>
-        <div className="diag-sec-hdr">
-          <span className="diag-sec-title">System Status</span>
-          <span style={{...M,fontSize:9,color:rosConnected?"var(--grn)":"var(--red)"}}>{rosConnected?"LIVE":"DOWN"}</span>
-        </div>
-        <div className="diag-kpi">
-          <div className="dkpi"><div className="dkpi-lbl">Bridge</div><div className={`dkpi-val ${rosConnected?"ok":"err"}`}>{rosConnected?"ONLINE":"OFFLINE"}</div></div>
-          <div className="dkpi"><div className="dkpi-lbl">ROS Nodes</div><div className="dkpi-val ok">{info.nodes.length||"–"}</div></div>
-          <div className="dkpi"><div className="dkpi-lbl">/joint_states</div><div className={`dkpi-val ${tlog["/joint_states"].hz>0?"ok":"warn"}`}>{tlog["/joint_states"].hz} Hz</div></div>
-          <div className="dkpi"><div className="dkpi-lbl">/cmd_vel</div><div className={`dkpi-val ${tlog["/cmd_vel"].hz>0?"ok":"warn"}`}>{tlog["/cmd_vel"].hz} Hz</div></div>
-        </div>
-      </div>
-
-      {/* ② Topic bus */}
-      <div className="diag-sec">
-        <div className="diag-sec-hdr">
-          <span className="diag-sec-title">Topic Bus</span>
-          <span style={{...M,fontSize:9,color:"var(--lo)"}}>msgs · hz · last</span>
-        </div>
-        <div className="topic-scroll">
-          {TRACKED.map(t=>(
-            <div className="topic-row" key={t}>
-              <span className="topic-name">{t}</span>
-              <div className="topic-meta">
-                <span className="topic-cnt">{tlog[t].count}</span>
-                <span className="topic-hz">{tlog[t].hz}Hz</span>
-                <span style={{...M,fontSize:9,color:"var(--mid)"}}>{tlog[t].last}</span>
-              </div>
-            </div>
-          ))}
-          {info.topics.slice(0,8).map(t=>(
-            <div className="topic-row" key={t} style={{opacity:.5}}>
-              <span style={{...M,fontSize:9,color:"var(--lo)"}}>{t}</span>
-              <span style={{...M,fontSize:9,color:"var(--lo)"}}>discovered</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ③ Velocity vector */}
-      <div className="diag-sec">
-        <div className="diag-sec-hdr">
-          <span className="diag-sec-title">Velocity Vector</span>
-          <span style={{...M,fontSize:9,color:"var(--lo)"}}>/cmd_vel</span>
-        </div>
-        <div style={{display:"flex",alignItems:"center",gap:14,padding:"8px 12px",flex:1}}>
-          <canvas ref={canvasRef} width={90} height={90} style={{borderRadius:6,flexShrink:0}}/>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            <div>
-              <div style={{...M,fontSize:8,color:"var(--lo)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:2}}>Linear</div>
-              <span style={{...M,fontSize:15,fontWeight:700,color:"var(--cyan)"}}>{vel.linear.toFixed(3)}</span>
-              <span style={{...M,fontSize:8,color:"var(--lo)"}}> m/s</span>
-            </div>
-            <div>
-              <div style={{...M,fontSize:8,color:"var(--lo)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:2}}>Angular</div>
-              <span style={{...M,fontSize:15,fontWeight:700,color:"var(--amb)"}}>{vel.angular.toFixed(3)}</span>
-              <span style={{...M,fontSize:8,color:"var(--lo)"}}> rad/s</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ④ ROS Nodes + Foxglove note */}
-      <div className="diag-sec" style={{minWidth:190}}>
-        <div className="diag-sec-hdr">
-          <span className="diag-sec-title">ROS2 Nodes</span>
-          <span style={{...M,fontSize:9,color:"var(--lo)"}}>{info.nodes.length} active</span>
-        </div>
-        <div style={{flex:1,overflow:"hidden auto"}}>
-          {info.nodes.length===0
-            ?<div style={{...M,padding:"8px 10px",fontSize:9,color:"var(--lo)"}}>No nodes yet — connect first</div>
-            :info.nodes.map(n=>(
-              <div key={n} style={{padding:"4px 10px",fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",borderBottom:"1px solid var(--b0)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={n}>
-                <span style={{color:"var(--cyan)",marginRight:4}}>▸</span>{n}
-              </div>
-            ))
-          }
-        </div>
-        {/* Foxglove 3D hook placeholder */}
-        <div style={{padding:"4px 10px 5px",borderTop:"1px solid var(--b0)",fontFamily:"JetBrains Mono",fontSize:8,color:"var(--lo)",letterSpacing:".06em"}}>
-          🔮 FOXGLOVE 3D — coming soon
-        </div>
-      </div>
-
-    </div>
-  );
+  return { tlog, info, TRACKED };
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -573,17 +502,36 @@ export default function App(){
   const [estp,setEstp]   = useState(false);
   const [joints,setJ]    = useState(initJ());
   const [feed,setFeed]   = useState(initJ());
-  const [speed,setSp]    = useState(1);
+  const [speed,setSpRaw] = useState(initialSpeed());
   const [logs,setLogs]   = useState([]);
-  const [url,setUrl]     = useState(`ws://${typeof window!=="undefined"?window.location.hostname:"localhost"}:9090`);
+  const [url,setUrlRaw]  = useState(initialUrl());
   const [hz,setHz]       = useState(0);
+  const [confirmAction,setConfirmAction] = useState(null);
+  const [rightTab,setRightTab] = useState("jog");
+  const [showFg,setShowFg] = useState(false);
 
-  const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null);
-  const cntRef=useRef(0), estRef=useRef(false);
+  // Operator-savable presets — built-ins can't be deleted, custom ones can
+  const [presets,setPresets] = useState(DEFAULT_PRESETS);
+
+  const [armPower,setArmPower] = useState(true);
+  const [waypoints,setWaypoints] = useState([]);
+  const [playing,setPlaying] = useState(false);
+  const playCancelRef = useRef(false);
+
+  const [testRunning,setTestRunning] = useState(false);
+  const [testResults,setTestResults] = useState([]);
+  const [testTarget,setTestTarget] = useState(DEFAULT_PRESETS[1].name);
+  const testCancelRef = useRef(false);
+
+  const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
+  const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   useEffect(()=>{estRef.current=estp;},[estp]);
 
   const log=useCallback((msg,type="info")=>{setLogs(p=>[{msg,type,time:ts()},...p.slice(0,99)]);},[]);
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
+
+  const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
+  const setSp  = useCallback(v=>{ setSpRaw(v); safeSet("armctrl_speed", String(v)); },[]);
 
   const connect=useCallback(()=>{
     const ROSLIB=window.ROSLIB;
@@ -595,10 +543,11 @@ export default function App(){
       setConn("connected"); log("ROS2 bridge connected","success");
       pubRef.current=new ROSLIB.Topic({ros,name:"/joint_commands",messageType:"sensor_msgs/JointState"});
       subRef.current=new ROSLIB.Topic({ros,name:"/joint_states",  messageType:"sensor_msgs/JointState"});
+      powerRef.current=new ROSLIB.Topic({ros,name:"/arm_power_state",messageType:"std_msgs/Bool"});
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
           const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI;});
-          setFeed(p=>({...p,...fb}));
+          setFeed(p=>{ const merged={...p,...fb}; feedRef.current=merged; return merged; });
         }
       });
       log("Subscribed /joint_states","info");
@@ -631,7 +580,11 @@ export default function App(){
     }
   },[joints,log]);
 
-  const handleResume=useCallback(()=>{setEstp(false);log("Emergency stop cleared — motion resumed","success");},[log]);
+  const handleResume=()=>setConfirmAction({
+    title:"Resume motion?", body:"Clears the emergency stop and allows the arm to move again. Make sure the area is clear.",
+    confirmLabel:"Resume", danger:false,
+    run:()=>{ setEstp(false); log("Emergency stop cleared — motion resumed","success"); },
+  });
 
   const stepJ=useCallback((id,delta)=>{
     if(estRef.current) return;
@@ -644,17 +597,131 @@ export default function App(){
 
   useEffect(()=>{if(conn==="connected"&&!estp) publish(joints);},[joints]); // eslint-disable-line
 
-  const applyP=useCallback((p)=>{if(estp)return;setJ(p.values);log(`Preset applied: ${p.name}`,"info");},[estp,log]);
-  const resetAll=useCallback(()=>{setJ(initJ());log("All joints → 0°","info");},[log]);
+  const requestPreset=(p)=>setConfirmAction({
+    title:`Move to "${p.name}"?`, body:"The arm will move to this saved position. Make sure the area is clear.",
+    confirmLabel:"Move Arm", danger:false,
+    run:()=>{ setJ(p.values); log(`Preset applied: ${p.name}`,"info"); },
+  });
+  const requestReset=()=>setConfirmAction({
+    title:"Reset all joints to 0°?", body:"This moves every joint back to zero. Make sure the area is clear.",
+    confirmLabel:"Reset", danger:false,
+    run:()=>{ setJ(initJ()); log("All joints → 0°","info"); },
+  });
 
+  // ── Operator-saved positions ────────────────────────────────────────────
+  const addPreset=()=>{
+    const name = window.prompt("Name this position (this is the arm's CURRENT pose):");
+    if(!name || !name.trim()) return;
+    const trimmed = name.trim();
+    if(presets.some(p=>p.name.toLowerCase()===trimmed.toLowerCase())){
+      log(`A position named "${trimmed}" already exists`,"warn"); return;
+    }
+    setPresets(p=>[...p, { name:trimmed, icon:"★", values:{...joints}, builtin:false }]);
+    log(`Saved current position as "${trimmed}"`,"success");
+  };
+  const deletePreset=(name)=>setConfirmAction({
+    title:`Delete "${name}"?`, body:"Removes this saved position. This can't be undone.",
+    confirmLabel:"Delete", danger:true,
+    run:()=>{
+      setPresets(p=>p.filter(x=>x.name!==name));
+      if(testTarget===name) setTestTarget(presets.find(p=>p.builtin&&p.name!=="Home")?.name || "Grab Ready");
+      log(`Deleted position "${name}"`,"warn");
+    },
+  });
+
+  // ── Teach Mode ──────────────────────────────────────────────────────────
+  const publishPower=(on)=>{ if(powerRef.current&&window.ROSLIB) powerRef.current.publish(new window.ROSLIB.Message({data:on})); };
+  const requestArmPower=(on)=>setConfirmAction({
+    title: on ? "Re-energize motors?" : "Enter Teach Mode?",
+    body: on
+      ? "Motors will re-energize and hold current position. Make sure hands are clear."
+      : "Motors de-energize — the arm goes slack and can be moved by hand. Web joint control disables while in Teach Mode.",
+    confirmLabel: on ? "Re-energize" : "Enter Teach Mode", danger:false,
+    run:()=>{
+      setArmPower(on); publishPower(on);
+      log(on?"Arm power ON — motors energized":"Arm power OFF — Teach Mode active", on?"success":"warn");
+      if(!on) setRightTab("teach");
+    },
+  });
+
+  const recordWaypoint=()=>{
+    const snapshot={...feedRef.current};
+    setWaypoints(p=>[...p,{id:Date.now(),values:snapshot,label:`Point ${p.length+1}`}]);
+    log(`Waypoint recorded (Point ${waypoints.length+1})`,"success");
+  };
+  const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id));
+  const clearWaypoints=()=>setConfirmAction({
+    title:"Clear all waypoints?", body:"Deletes the entire recorded trajectory. This can't be undone.",
+    confirmLabel:"Clear", danger:true,
+    run:()=>{ setWaypoints([]); log("Trajectory cleared","warn"); },
+  });
+  const stopPlayback=()=>{ playCancelRef.current=true; };
+  const playTrajectory=()=>{
+    if(waypoints.length===0) return;
+    setConfirmAction({
+      title:"Play recorded trajectory?",
+      body:`Moves through ${waypoints.length} waypoint(s) in sequence. Motors must be powered ON. Make sure the area is clear.`,
+      confirmLabel:"Play", danger:false,
+      run: async ()=>{
+        if(!armPower){ log("Playback blocked — re-energize the arm first","error"); return; }
+        playCancelRef.current=false; setPlaying(true);
+        log(`Playing trajectory (${waypoints.length} points)`,"info");
+        for(const wp of waypoints){
+          if(playCancelRef.current) break;
+          setJ(prev=>({...prev,...wp.values}));
+          await new Promise(res=>setTimeout(res,1500));
+        }
+        setPlaying(false);
+        log(playCancelRef.current?"Playback stopped":"Playback complete", playCancelRef.current?"warn":"success");
+      },
+    });
+  };
+
+  // ── Closed-Loop Accuracy: repeatability test ────────────────────────────
+  const stopTest=()=>{ testCancelRef.current=true; };
+  const runRepeatabilityTest=(targetPreset,cycles=10)=>{
+    const home = presets.find(p=>p.name==="Home") || DEFAULT_PRESETS[0];
+    setConfirmAction({
+      title:"Run repeatability test?",
+      body:`Cycles between Home and "${targetPreset.name}" ${cycles} times, logging position error each stop (~${Math.round(cycles*3)}s).`,
+      confirmLabel:"Run Test", danger:false,
+      run: async ()=>{
+        testCancelRef.current=false; setTestRunning(true); setTestResults([]);
+        log(`Repeatability test: ${cycles} cycles → "${targetPreset.name}"`,"info");
+        for(let i=0;i<cycles;i++){
+          if(testCancelRef.current) break;
+          setJ(home.values);
+          await new Promise(res=>setTimeout(res,1500));
+          setJ(targetPreset.values);
+          await new Promise(res=>setTimeout(res,1500));
+          const err=Math.max(...JOINTS.map(j=>Math.abs((targetPreset.values[j.id]||0)-(feedRef.current[j.id]||0))));
+          setTestResults(p=>[...p,{run:i+1,err}]);
+        }
+        setTestRunning(false);
+        log(testCancelRef.current?"Test stopped":"Test complete","success");
+      },
+    });
+  };
+
+  const diag = useDiagnostics(conn==="connected", rosRef.current);
   const maxErr=Math.max(...JOINTS.map(j=>Math.abs((joints[j.id]||0)-(feed[j.id]||0))));
   const anyNear=JOINTS.some(j=>nearLim(joints[j.id],j));
-  const dis=estp||conn!=="connected";
+  const dis=estp||conn!=="connected"||!armPower;
+  const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
+  const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
+  const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
   return(
     <>
       <style>{CSS}</style>
       {estp&&<><div className="estop-ov"/><div className="estop-banner">⬛ EMERGENCY STOP — ALL MOTION HALTED</div></>}
+      <ConfirmDialog
+        open={!!confirmAction} title={confirmAction?.title} body={confirmAction?.body}
+        confirmLabel={confirmAction?.confirmLabel} danger={confirmAction?.danger}
+        onConfirm={()=>{ confirmAction?.run?.(); setConfirmAction(null); }}
+        onCancel={()=>setConfirmAction(null)}
+      />
+      <FoxgloveModal open={showFg} url={url} onClose={()=>setShowFg(false)} />
 
       <div className="shell">
 
@@ -665,27 +732,17 @@ export default function App(){
             ARM · CONTROL
           </div>
 
-          {/* URL input centred in header — no sidebar needed */}
           <div className="hdr-center">
             <div className="hdr-url-wrap">
               <span className="hdr-url-label">ws://</span>
-              <input
-                className="hdr-url-input"
-                value={url.replace(/^ws:\/\//,"")}
-                onChange={e=>setUrl("ws://"+e.target.value)}
-                disabled={conn==="connected"}
-                spellCheck={false}
-              />
+              <input className="hdr-url-input" value={url.replace(/^ws:\/\//,"")} onChange={e=>setUrl("ws://"+e.target.value)} disabled={conn==="connected"} spellCheck={false}/>
             </div>
-            <button className="hbtn conn" onClick={connect} disabled={conn!=="disconnected"}>
-              {conn==="connecting"?"Connecting…":"Connect"}
-            </button>
-            <button className="hbtn disc" onClick={disconnect} disabled={conn==="disconnected"}>
-              Disconnect
-            </button>
+            <button className="hbtn conn" onClick={connect} disabled={conn!=="disconnected"}>{conn==="connecting"?"Connecting…":"Connect"}</button>
+            <button className="hbtn disc" onClick={disconnect} disabled={conn==="disconnected"}>Disconnect</button>
           </div>
 
           <div className="hdr-r">
+            <span className={`mode-pill ${armPower?"run":"teach"}`}>{armPower?"Web Control":"Teach Mode"}</span>
             <div className={`badge ${conn}`}>
               <div className="bdg-dot"/>
               {conn==="connected"?"ONLINE":conn==="connecting"?"CONNECTING":"OFFLINE"}
@@ -704,32 +761,53 @@ export default function App(){
           <aside className="side side-l">
             <div className="slbl">Speed</div>
             <div className="spd-row">
-              {SPEEDS.map((s,i)=><button key={s} className={`spd ${speed===i?"on":""}`} onClick={()=>setSp(i)}>{s}</button>)}
+              {SPEEDS.map((s,i)=>{
+                const rate = (JOG_DEG[i] / (JOG_MS[i]/1000)).toFixed(1);
+                return (
+                  <button key={s} className={`spd ${speed===i?"on":""}`} onClick={()=>setSp(i)}>
+                    <div>{s}</div>
+                    <div className="spd-rate">{rate}°/s</div>
+                  </button>
+                );
+              })}
             </div>
 
-            <div className="slbl">Presets</div>
+            <div className="slbl">Arm Power</div>
+            <div className="pwr-row">
+              <div className="pwr-label">
+                <span className="pwr-title">{armPower?"Energized":"De-energized"}</span>
+                <span className="pwr-sub">{armPower?"NORMAL CONTROL":"BACK-DRIVABLE"}</span>
+              </div>
+              <button className={`tgl ${armPower?"on":""}`} onClick={()=>requestArmPower(!armPower)} disabled={conn!=="connected"||estp}>
+                <div className="tgl-thumb"/>
+              </button>
+            </div>
+
+            <div className="slbl">Saved Positions</div>
             <div className="pgrid">
-              {PRESETS.map(p=>(
-                <button key={p.name} className="pbtn" onClick={()=>applyP(p)} disabled={dis}>
+              {presets.map(p=>(
+                <button key={p.name} className="pbtn" onClick={()=>requestPreset(p)} disabled={dis}>
+                  {!p.builtin && <span className="pbtn-del" onClick={(e)=>{e.stopPropagation();deletePreset(p.name);}} title="Delete">✕</span>}
                   <span className="ico">{p.icon}</span>{p.name}
                 </button>
               ))}
+              <button className="pbtn add" onClick={addPreset} disabled={conn!=="connected"}>
+                <span className="ico">+</span>Save Current
+              </button>
             </div>
 
             <div className="slbl">Actions</div>
             <div className="act-row">
-              <button className="abtn" onClick={resetAll} disabled={dis}>Reset All</button>
+              <button className="abtn" onClick={requestReset} disabled={dis}>Reset All</button>
               <button className="abtn" onClick={()=>publish()} disabled={dis}>Publish</button>
             </div>
 
             <div className="slbl">Arm Preview</div>
-            <ArmViz joints={joints}/>
+            <ArmViz joints={armPower?joints:feed}/>
           </aside>
 
           {/* ── CENTER ── */}
           <main className="center">
-
-            {/* Controls row */}
             <div className="ctrl-row">
 
               {/* Joint Controls column */}
@@ -776,30 +854,64 @@ export default function App(){
                 </div>
               </div>
 
-              {/* Right control column: Cartesian + Log */}
+              {/* Right control column: Jog / Teach tabs + Log */}
               <div className="ctrl-col">
                 <div className="col-hdr">
-                  <span className="col-title">Cartesian Jog</span>
-                  <span className="col-tag">Hold = continuous · {JOG_DEG[speed]}°/tick</span>
-                </div>
-                <div className="right-col-inner">
-                  <div className="cart-body">
-                    {[
-                      {axis:"X",label:"Base / Yaw",  color:"#00D4FF",id:"joint_1",dir:["←","→"]},
-                      {axis:"Y",label:"Shoulder",    color:"#00FF9D",id:"joint_2",dir:["↓","↑"]},
-                      {axis:"Z",label:"Elbow",       color:"#FFB800",id:"joint_3",dir:["←","→"]},
-                    ].map(({axis,label,color,id,dir})=>(
-                      <div className="jax" key={axis}>
-                        <div className="axlbl"><div className="axdot" style={{background:color}}/>{axis} — {label}</div>
-                        <div className="jog-row">
-                          <JBtn speed={speed} onClick={()=>stepJ(id,-JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[0]}</span><span>{axis}−</span></JBtn>
-                          <div className="jbtn mid">{axis}<br/>hold</div>
-                          <JBtn speed={speed} onClick={()=>stepJ(id,JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[1]}</span><span>{axis}+</span></JBtn>
-                        </div>
-                      </div>
-                    ))}
-                    <button className="zero-btn" onClick={resetAll} disabled={dis}>Zero All Axes</button>
+                  <div className="col-tabs">
+                    <button className={`col-tab ${rightTab==="jog"?"on":""}`} onClick={()=>setRightTab("jog")}>Cartesian Jog</button>
+                    <button className={`col-tab purple ${rightTab==="teach"?"on":""}`} onClick={()=>setRightTab("teach")}>Teach Mode</button>
                   </div>
+                  <span className="col-tag">{rightTab==="jog"?`Hold · ${JOG_DEG[speed]}°/tick`:`${waypoints.length} pts`}</span>
+                </div>
+
+                <div className="right-col-inner">
+                  {rightTab==="jog" ? (
+                    <div className="cart-body">
+                      {[
+                        {axis:"X",label:"Base / Yaw",  color:"#00D4FF",id:"joint_1",dir:["←","→"]},
+                        {axis:"Y",label:"Shoulder",    color:"#00FF9D",id:"joint_2",dir:["↓","↑"]},
+                        {axis:"Z",label:"Elbow",       color:"#FFB800",id:"joint_3",dir:["←","→"]},
+                      ].map(({axis,label,color,id,dir})=>(
+                        <div className="jax" key={axis}>
+                          <div className="axlbl"><div className="axdot" style={{background:color}}/>{axis} — {label}</div>
+                          <div className="jog-row">
+                            <JBtn speed={speed} onClick={()=>stepJ(id,-JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[0]}</span><span>{axis}−</span></JBtn>
+                            <div className="jbtn mid">{axis}<br/>hold</div>
+                            <JBtn speed={speed} onClick={()=>stepJ(id,JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[1]}</span><span>{axis}+</span></JBtn>
+                          </div>
+                        </div>
+                      ))}
+                      <button className="zero-btn" onClick={requestReset} disabled={dis}>Zero All Axes</button>
+                    </div>
+                  ) : (
+                    <div className="teach-body">
+                      <div className={`teach-status ${armPower?"off":"on"}`}>
+                        {armPower ? "Motors energized — turn Arm Power off to teach" : "Arm is free — move it by hand, then record"}
+                      </div>
+                      <button className="record-btn" onClick={recordWaypoint} disabled={armPower||conn!=="connected"||estp}>
+                        <span className="rdot"/>RECORD WAYPOINT
+                      </button>
+                      <div className="wp-scroll">
+                        {waypoints.length===0
+                          ? <div className="wp-empty">No waypoints yet.<br/>Turn Arm Power off, then record.</div>
+                          : waypoints.map(wp=>(
+                            <div className="wp-row" key={wp.id}>
+                              <div>
+                                <div className="wp-name">{wp.label}</div>
+                                <div className="wp-vals">{JOINTS.map(j=>`${j.short}:${(wp.values[j.id]??0).toFixed(0)}`).join(" ")}</div>
+                              </div>
+                              <button className="wp-del" onClick={()=>deleteWaypoint(wp.id)}>DEL</button>
+                            </div>
+                          ))
+                        }
+                      </div>
+                      <div className="play-row">
+                        <button className="pbtn2 primary" onClick={playTrajectory} disabled={waypoints.length===0||playing||!armPower||conn!=="connected"}>▶ PLAY</button>
+                        <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
+                        <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="log-section">
                     <div className="log-hdr">
@@ -815,15 +927,101 @@ export default function App(){
               </div>
             </div>
 
-            {/* Diagnostics strip — pinned to bottom of center */}
+            {/* Diagnostics strip */}
             <div style={{flexShrink:0,borderTop:"1px solid var(--b0)"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 12px",borderBottom:"1px solid var(--b0)",background:"rgba(255,255,255,.01)"}}>
                 <span style={{fontFamily:"JetBrains Mono",fontSize:10,fontWeight:700,color:"var(--hi)",letterSpacing:".05em",textTransform:"uppercase"}}>ROS2 Diagnostics</span>
                 <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>rosbridge · live</span>
               </div>
-              <DiagPanel rosConnected={conn==="connected"} rosInstance={rosRef.current}/>
-            </div>
 
+              <div className="diag-strip">
+                {/* ① Status KPIs */}
+                <div className="diag-sec" style={{minWidth:190}}>
+                  <div className="diag-sec-hdr">
+                    <span className="diag-sec-title">System Status</span>
+                    <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:conn==="connected"?"var(--grn)":"var(--red)"}}>{conn==="connected"?"LIVE":"DOWN"}</span>
+                  </div>
+                  <div className="diag-kpi">
+                    <div className="dkpi"><div className="dkpi-lbl">Bridge</div><div className={`dkpi-val ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"ONLINE":"OFFLINE"}</div></div>
+                    <div className="dkpi"><div className="dkpi-lbl">ROS Nodes</div><div className="dkpi-val ok">{diag.info.nodes.length||"–"}</div></div>
+                    <div className="dkpi"><div className="dkpi-lbl">/joint_states</div><div className={`dkpi-val ${diag.tlog["/joint_states"].hz>0?"ok":"warn"}`}>{diag.tlog["/joint_states"].hz} Hz</div></div>
+                    <div className="dkpi"><div className="dkpi-lbl">Pub Hz</div><div className="dkpi-val ok">{hz}</div></div>
+                  </div>
+                </div>
+
+                {/* ② Topic bus */}
+                <div className="diag-sec">
+                  <div className="diag-sec-hdr">
+                    <span className="diag-sec-title">Topic Bus</span>
+                    <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>msgs · hz · last</span>
+                  </div>
+                  <div className="topic-scroll">
+                    {diag.TRACKED.map(t=>(
+                      <div className="topic-row" key={t}>
+                        <span className="topic-name">{t}</span>
+                        <div className="topic-meta">
+                          <span className="topic-cnt">{diag.tlog[t].count}</span>
+                          <span className="topic-hz">{diag.tlog[t].hz}Hz</span>
+                          <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)"}}>{diag.tlog[t].last}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {diag.info.topics.slice(0,6).map(t=>(
+                      <div className="topic-row" key={t} style={{opacity:.5}}>
+                        <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>{t}</span>
+                        <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>discovered</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ③ Repeatability Test */}
+                <div className="diag-sec">
+                  <div className="diag-sec-hdr">
+                    <span className="diag-sec-title">Repeatability Test</span>
+                    <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>closed-loop accuracy</span>
+                  </div>
+                  <div className="rt-row">
+                    <span className="rt-taglabel">TEST TARGET</span>
+                    <select className="rt-select" value={testTarget} onChange={e=>setTestTarget(e.target.value)} disabled={testRunning}>
+                      {presets.filter(p=>p.name!=="Home").map(p=><option key={p.name} value={p.name}>{p.name}</option>)}
+                    </select>
+                    {!testRunning
+                      ? <button className="rt-btn" onClick={()=>runRepeatabilityTest(testPreset,10)} disabled={conn!=="connected"||!armPower}>RUN ×10</button>
+                      : <button className="rt-btn stop" onClick={stopTest}>STOP</button>}
+                  </div>
+                  <div className="rt-scroll">
+                    {testResults.length===0 && !testRunning && <div className="rt-empty">No results yet — motors must be on</div>}
+                    {testResults.map(r=>(
+                      <div className="rt-line" key={r.run}>
+                        <span style={{width:16,color:"var(--lo)"}}>#{r.run}</span>
+                        <div className="rt-bar-track"><div className="rt-bar-fill" style={{width:`${Math.min(100,r.err*10)}%`,background:r.err>3?"var(--amb)":"var(--grn)"}}/></div>
+                        <span style={{width:34,textAlign:"right",color:r.err>3?"var(--amb)":"var(--grn)",fontWeight:700}}>{r.err.toFixed(2)}°</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ④ ROS Nodes + Foxglove launch */}
+                <div className="diag-sec" style={{minWidth:190}}>
+                  <div className="diag-sec-hdr">
+                    <span className="diag-sec-title">ROS2 Nodes</span>
+                    <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>{diag.info.nodes.length} active</span>
+                  </div>
+                  <div style={{flex:1,overflow:"hidden auto",minHeight:0}}>
+                    {diag.info.nodes.length===0
+                      ?<div style={{fontFamily:"JetBrains Mono",padding:"8px 10px",fontSize:9,color:"var(--lo)"}}>No nodes yet — connect first</div>
+                      :diag.info.nodes.map(n=>(
+                        <div key={n} style={{padding:"4px 10px",fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",borderBottom:"1px solid var(--b0)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={n}>
+                          <span style={{color:"var(--cyan)",marginRight:4}}>▸</span>{n}
+                        </div>
+                      ))
+                    }
+                  </div>
+                  <button className="fg-link" onClick={()=>{ if(conn==="connected"){ setShowFg(true); log("Opened Foxglove 3D view","info"); } }} disabled={conn!=="connected"}>🔮 Open Foxglove 3D View</button>
+                </div>
+              </div>
+            </div>
           </main>
 
           {/* ── RIGHT SIDEBAR ── */}
@@ -840,7 +1038,7 @@ export default function App(){
               </div>
             </div>
 
-            <div className="slbl sr-fb">Feedback vs CMD</div>
+            <div className="slbl">Feedback vs CMD</div>
             <div className="fb-body">
               {JOINTS.map(j=>{
                 const cmd=joints[j.id]??0, fb=feed[j.id]??0, err=Math.abs(cmd-fb);
@@ -857,12 +1055,21 @@ export default function App(){
                   </div>
                 );
               })}
-            </div>
 
-            <div className="sr-emg">
-              <div style={{fontFamily:"JetBrains Mono",fontSize:9,fontWeight:700,letterSpacing:".14em",textTransform:"uppercase",color:"var(--lo)",marginBottom:2}}>Emergency</div>
-              <button className="emg-btn danger" onClick={handleEstop} disabled={estp}>⬛ Emergency Stop</button>
-              {estp&&<button className="emg-btn resume" onClick={handleResume}>✓ Clear &amp; Resume</button>}
+              {/* Freed-up space now used for the last test's summary, per Function 3 */}
+              <div className="test-summary">
+                <div className="test-summary-title">Last Repeatability Test</div>
+                {testResults.length===0 ? (
+                  <div className="test-summary-row"><span>No test run yet</span></div>
+                ) : (
+                  <>
+                    <div className={`test-summary-row ${testAvg>3?"warn":"ok"}`}><span>Avg Error</span><b>{testAvg.toFixed(2)}°</b></div>
+                    <div className={`test-summary-row ${testMax>3?"warn":"ok"}`}><span>Max Error</span><b>{testMax.toFixed(2)}°</b></div>
+                    <div className="test-summary-row"><span>Runs</span><b>{testResults.length}</b></div>
+                    <div className="test-summary-row"><span>Target</span><b>{testTarget}</b></div>
+                  </>
+                )}
+              </div>
             </div>
           </aside>
 
@@ -874,7 +1081,7 @@ export default function App(){
           <span>ros2 bridge</span>
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v2.0 · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v3.1 · {ts()}</span>
         </div>
 
       </div>
