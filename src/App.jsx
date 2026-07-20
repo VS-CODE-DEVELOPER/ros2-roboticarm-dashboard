@@ -28,6 +28,9 @@ const fillSt   = (val,min,max,col) => {
   const p=v=>((v-min)/(max-min))*100, z=p(clamp(0,min,max)), vp=p(val);
   return {left:`${Math.min(z,vp)}%`,width:`${Math.abs(z-vp)}%`,background:col};
 };
+// Delta-bar thresholds for Feedback vs CMD — proves closed-loop tracking at a glance
+const deltaColor = (err) => err < 1 ? "var(--grn)" : err < 3 ? "var(--amb)" : "var(--red)";
+const deltaPct   = (err) => Math.min(100, (err/10)*100);
 
 // ─── localStorage — wrapped safely ────────────────────────────────────────
 const safeGet = (key, fallback) => {
@@ -44,6 +47,18 @@ const initialUrl = () => {
 const initialSpeed = () => {
   const n = Number(safeGet("armctrl_speed", "1"));
   return Number.isFinite(n) && n >= 0 && n <= 2 ? n : 1;
+};
+const initialMode = () => {
+  const m = safeGet("armctrl_mode", "ros");
+  return m === "mock" ? "mock" : "ros";
+};
+const initialWaypoints = () => {
+  try {
+    const raw = safeGet("armctrl_waypoints", null);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
 };
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
@@ -75,17 +90,22 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 @keyframes fw{0%,100%{border-color:var(--amb);background:var(--adim)}50%{border-color:#F80;background:rgba(255,120,0,.2)}}
 @keyframes fd{0%,100%{border-color:var(--red);background:var(--rdim)}50%{border-color:#F00;background:rgba(255,0,0,.25)}}
 
-.hdr-center{display:flex;align-items:center;gap:8px;flex:1;justify-content:center}
+.hdr-center{display:flex;align-items:center;gap:8px;flex:1;justify-content:center;min-width:0}
 .hdr-r{display:flex;align-items:center;gap:8px;flex-shrink:0}
 
-.hdr-url-wrap{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--b0);border-radius:var(--r);padding:3px 8px}
+.hdr-url-wrap{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--b0);border-radius:var(--r);padding:3px 8px;min-width:0;flex:0 1 320px}
 .hdr-url-label{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
-.hdr-url-input{background:transparent;border:none;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;outline:none;width:220px}
+.hdr-url-input{background:transparent;border:none;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;outline:none;width:100%;min-width:0}
 .hdr-url-input:disabled{opacity:.6}
 
 .mode-pill{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
 .mode-pill.run{background:var(--cdim);color:var(--cyan)}
 .mode-pill.teach{background:var(--pdim);color:var(--purple)}
+
+.mode-toggle{padding:4px 10px;border-radius:14px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid);flex-shrink:0}
+.mode-toggle.sim{border-color:var(--amb);color:var(--amb);background:var(--adim)}
+.mode-toggle:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
+.mode-toggle:disabled{opacity:.4;cursor:not-allowed}
 
 .badge{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.07em;text-transform:uppercase;border:1px solid transparent;transition:all .3s;white-space:nowrap}
 .badge.connected{color:var(--grn);border-color:var(--grn);background:var(--gdim)}
@@ -94,7 +114,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .bdg-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
 .badge.connected .bdg-dot{animation:blink 1.5s infinite}
 
-.hbtn{padding:4px 12px;border-radius:var(--r);font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.05em;cursor:pointer;transition:all .15s;border:1.5px solid transparent;white-space:nowrap}
+.hbtn{padding:4px 12px;border-radius:var(--r);font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.05em;cursor:pointer;transition:all .15s;border:1.5px solid transparent;white-space:nowrap;flex-shrink:0}
 .hbtn:active{transform:scale(.97)}
 .hbtn:disabled{opacity:.35;cursor:not-allowed}
 .hbtn.conn{background:var(--gdim);color:var(--grn);border-color:var(--grn)}
@@ -112,7 +132,6 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .side-l{border-right:1px solid var(--b0)}
 .side-r{border-left:1px solid var(--b0)}
 .slbl{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--lo);padding:10px 12px 4px;flex-shrink:0}
-.sl-viz{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
 
 .spd-row{display:flex;padding:5px 10px;gap:4px}
 .spd{flex:1;padding:5px 2px;background:var(--panel);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px}
@@ -247,8 +266,8 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 
 .log-section{flex:1;overflow:hidden;display:flex;flex-direction:column;border-top:1px solid var(--b0);min-height:0}
 .log-hdr{display:flex;align-items:center;justify-content:space-between;padding:6px 11px;border-bottom:1px solid var(--b0);background:rgba(255,255,255,.01);flex-shrink:0}
-.logwrap{flex:1;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:9px;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;display:flex;flex-direction:column-reverse;min-height:0}
-.lent{display:flex;gap:7px;padding:3px 10px;border-top:1px solid var(--b0);align-items:baseline;flex-shrink:0}
+.logwrap{flex:1;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:9px;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;display:flex;flex-direction:column-reverse;min-height:0;padding-bottom:8px}
+.lent{display:flex;gap:7px;padding:5px 10px;border-top:1px solid var(--b0);align-items:baseline;flex-shrink:0}
 .lent:hover{background:var(--hover)}
 .ltm{color:var(--lo);flex-shrink:0}
 .lmsg{color:var(--mid)}
@@ -265,8 +284,8 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .diag-sec-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lo)}
 .diag-kpi{display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:1fr;gap:1px;background:var(--b0);flex:1;min-height:0;overflow:hidden}
 .dkpi{background:var(--card);padding:6px 10px;display:flex;flex-direction:column;justify-content:center;min-height:0;overflow:hidden}
-.dkpi-lbl{font-size:8px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:1px}
-.dkpi-val{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--hi);line-height:1}
+.dkpi-lbl{font-size:8px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dkpi-val{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--hi);line-height:1;white-space:nowrap}
 .dkpi-val.ok{color:var(--grn)}
 .dkpi-val.warn{color:var(--amb)}
 .dkpi-val.err{color:var(--red)}
@@ -278,6 +297,7 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .topic-cnt{color:var(--lo)}
 .topic-scroll{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;min-height:0}
 
+/* Repeatability Test — consolidated: controls + live results + summary all in ONE panel */
 .rt-row{display:flex;align-items:center;gap:6px;padding:5px 10px;flex-shrink:0}
 .rt-taglabel{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo);flex-shrink:0}
 .rt-select{flex:1;background:var(--panel);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:9px;padding:3px 5px}
@@ -289,6 +309,21 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .rt-bar-track{flex:1;height:4px;background:var(--b1);border-radius:2px;overflow:hidden}
 .rt-bar-fill{height:100%;border-radius:2px}
 .rt-empty{padding:10px;text-align:center;font-size:9px;color:var(--lo)}
+.rt-summary{display:flex;gap:10px;padding:5px 10px;border-top:1px solid var(--b0);background:var(--card);flex-shrink:0;font-family:'JetBrains Mono',monospace;font-size:9px;align-items:center}
+.rt-summary b{color:var(--hi)}
+.rt-summary.warn b{color:var(--amb)}
+.rt-summary.ok b{color:var(--grn)}
+.rt-chart-wrap{flex:1;min-height:0;padding:4px 8px}
+.rt-csv{margin-left:auto;padding:3px 8px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.04em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
+.rt-csv:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
+.rt-csv:disabled{opacity:.3;cursor:not-allowed}
+
+/* ROS2 Nodes — Foxglove button locked at TOP, never scrolls, never gets pushed off */
+.nodes-sec{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.fg-link{margin:6px 10px;padding:8px;background:var(--purple);border:1px solid var(--purple);border-radius:6px;color:#04160D;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:800;letter-spacing:.06em;text-align:center;cursor:pointer;text-transform:uppercase;flex-shrink:0;box-shadow:0 0 10px rgba(199,125,255,.35)}
+.fg-link:hover{background:#D896FF}
+.fg-link:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}
+.nodes-scroll{flex:1;overflow-y:auto;min-height:0;scrollbar-width:thin;scrollbar-color:var(--b0) transparent}
 
 /* ── Right sidebar ── */
 .sr-telem{flex-shrink:0}
@@ -301,17 +336,12 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .tval.err{color:var(--red)}
 
 .fb-body{flex:1;overflow-y:auto;display:flex;flex-direction:column;min-height:0;scrollbar-width:thin;scrollbar-color:var(--b0) transparent}
-.fbrow{padding:5px 10px;border-bottom:1px solid var(--b0);flex-shrink:0}
+.fbrow{padding:6px 10px;border-bottom:1px solid var(--b0);flex-shrink:0}
 .fbrow:last-child{border-bottom:none}
 .fbtop{display:flex;justify-content:space-between;margin-bottom:1px}
-.fbbot{display:flex;justify-content:space-between}
-
-.test-summary{margin:8px 10px;padding:8px;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);flex-shrink:0}
-.test-summary-title{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo);letter-spacing:.08em;margin-bottom:5px;text-transform:uppercase}
-.test-summary-row{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 0;color:var(--mid)}
-.test-summary-row b{color:var(--hi)}
-.test-summary-row.warn b{color:var(--amb)}
-.test-summary-row.ok b{color:var(--grn)}
+.fbbot{display:flex;justify-content:space-between;margin-bottom:3px}
+.fbbar-track{height:3px;background:var(--b1);border-radius:2px;overflow:hidden}
+.fbbar-fill{height:100%;border-radius:2px;transition:width .2s,background .2s}
 
 .strip{display:flex;align-items:center;gap:7px;padding:0 12px;background:var(--bg);border-top:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--mid);overflow:hidden}
 .sdot{width:5px;height:5px;border-radius:50%;background:var(--lo);flex-shrink:0}
@@ -335,11 +365,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .modal-btn.confirm{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .modal-btn.danger{border-color:var(--red);color:var(--red);background:var(--rdim)}
 
-.fg-link{margin:4px 10px 5px;padding:5px 8px;background:var(--pdim);border:1px solid var(--purple);border-radius:5px;color:var(--purple);font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.06em;text-align:center;cursor:pointer;text-transform:uppercase}
-.fg-link:hover{background:var(--purple);color:#04160D}
-.fg-link:disabled{opacity:.3;cursor:not-allowed}
-
-/* ── Foxglove overlay — non-blocking, doesn't touch the base grid ── */
 .fgmodal-bg{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:3000}
 .fgmodal{background:var(--panel);border:1px solid var(--purple);border-radius:var(--rl);width:90vw;height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
 .fgmodal-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;border-bottom:1px solid var(--b0);background:var(--card);flex-shrink:0}
@@ -350,7 +375,65 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .fgmodal-close:hover{border-color:var(--red);color:var(--red)}
 .fgmodal-frame{flex:1;border:none;width:100%;background:#000}
 .fgmodal-note{padding:5px 14px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);border-top:1px solid var(--b0);flex-shrink:0}
+
+/* ── Tablet / touch responsiveness ── */
+@media (max-width:1024px){
+  html,body,#root{overflow-y:auto;height:auto}
+  .shell{height:auto;min-height:100vh;overflow:visible;grid-template-rows:auto auto auto}
+  .body{grid-template-columns:1fr;overflow:visible}
+  .side{overflow:visible;min-height:0}
+  .side-l{border-right:none;border-bottom:2px solid var(--b0)}
+  .side-r{border-left:none;border-top:2px solid var(--b0)}
+  .center{grid-template-rows:auto auto;overflow:visible}
+  .ctrl-row{grid-template-columns:1fr;overflow:visible}
+  .ctrl-col{border-right:none;border-bottom:2px solid var(--b0)}
+  .joints-body{overflow:visible}
+  .jrow{flex:none;padding:8px 12px}
+  .diag-strip{grid-template-columns:1fr 1fr;height:auto}
+  .diag-sec{height:240px;border-bottom:1px solid var(--b0)}
+  .hdr{flex-wrap:wrap;height:auto;min-height:var(--hdr);padding:8px 10px}
+  .hdr-center{order:3;width:100%;justify-content:flex-start;margin-top:6px}
+  .hdr-url-wrap{flex:1 1 auto}
+  .estop-mushroom,.hbtn,.record-btn,.zero-btn,.rt-btn,.mode-toggle{min-height:44px}
+  .sbtn{width:44px;height:44px}
+  .jbtn,.pbtn,.pbtn2,.spd{min-height:44px}
+  input[type=range]::-webkit-slider-thumb{width:20px;height:20px}
+  .cart-body{overflow:visible}
+  .wp-scroll,.logwrap,.fb-body,.nodes-scroll,.rt-scroll,.topic-scroll{max-height:260px}
+}
 `;
+
+// ─── Trend chart — hand-built SVG, no charting library. A <path> and a
+//     handful of <circle>s cost nothing to render, even on a tablet CPU
+//     that also has to keep up with jog commands and WebSocket parsing. ───
+function TrendChart({ results }) {
+  if (!results.length) return null;
+  const W=280, H=100, padL=16, padR=8, padT=8, padB=14;
+  const n=results.length;
+  const maxErr=Math.max(5, ...results.map(r=>r.err))*1.15;
+  const x=i=> padL + (n===1?0:(i/(n-1)))*(W-padL-padR);
+  const y=v=> H-padB - (v/maxErr)*(H-padT-padB);
+  const dot=(err)=> err<1?"#00FF9D":err<3?"#FFB800":"#FF3B3B";
+  const pathD=results.map((r,i)=>`${i===0?"M":"L"} ${x(i).toFixed(1)} ${y(r.err).toFixed(1)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"100%"}} preserveAspectRatio="none">
+      {/* 1° / 3° threshold guides */}
+      <line x1={padL} y1={y(1)} x2={W-padR} y2={y(1)} stroke="#00FF9D" strokeWidth=".5" strokeDasharray="2 2" opacity=".35"/>
+      <line x1={padL} y1={y(3)} x2={W-padR} y2={y(3)} stroke="#FFB800" strokeWidth=".5" strokeDasharray="2 2" opacity=".35"/>
+      {/* axes */}
+      <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#253545" strokeWidth=".6"/>
+      <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#253545" strokeWidth=".6"/>
+      {/* trend line */}
+      <path d={pathD} fill="none" stroke="#00D4FF" strokeWidth="1.4"/>
+      {results.map((r,i)=>(
+        <circle key={r.run} cx={x(i)} cy={y(r.err)} r="2.4" fill={dot(r.err)} stroke="#0D1117" strokeWidth=".8"/>
+      ))}
+      <text x={padL} y={padT-1} fontSize="6" fill="#3D4E5E" fontFamily="monospace">{maxErr.toFixed(0)}°</text>
+      <text x={padL} y={H-padB+9} fontSize="6" fill="#3D4E5E" fontFamily="monospace">1</text>
+      <text x={W-padR} y={H-padB+9} fontSize="6" fill="#3D4E5E" fontFamily="monospace" textAnchor="end">{n}</text>
+    </svg>
+  );
+}
 
 // ─── Confirm dialog ─────────────────────────────────────────────────────────
 function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onCancel }) {
@@ -369,7 +452,7 @@ function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onC
   );
 }
 
-// ─── Foxglove overlay — additive only, sits on top, never alters the grid ────
+// ─── Foxglove overlay — additive only ────────────────────────────────────────
 function FoxgloveModal({ open, url, onClose }) {
   if (!open) return null;
   const fgUrl = `https://app.foxglove.dev/?ds=rosbridge-websocket&ds.url=${encodeURIComponent(url)}`;
@@ -377,7 +460,7 @@ function FoxgloveModal({ open, url, onClose }) {
     <div className="fgmodal-bg" onClick={onClose}>
       <div className="fgmodal" onClick={e=>e.stopPropagation()}>
         <div className="fgmodal-hdr">
-          <span className="fgmodal-title">🔮 FOXGLOVE 3D VIEW</span>
+          <span className="fgmodal-title">FOXGLOVE 3D VIEW</span>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             <a href={fgUrl} target="_blank" rel="noopener noreferrer" className="fgmodal-tab">Open in New Tab ↗</a>
             <button className="fgmodal-close" onClick={onClose}>✕</button>
@@ -510,11 +593,14 @@ export default function App(){
   const [rightTab,setRightTab] = useState("jog");
   const [showFg,setShowFg] = useState(false);
 
-  // Operator-savable presets — built-ins can't be deleted, custom ones can
+  // ── Transport mode: 'ros' (real rosbridge) or 'mock' (Local Simulation Mode) ──
+  const [mode,setModeRaw] = useState(initialMode());
+  const setMode = useCallback(v=>{ setModeRaw(v); safeSet("armctrl_mode", v); }, []);
+
   const [presets,setPresets] = useState(DEFAULT_PRESETS);
 
   const [armPower,setArmPower] = useState(true);
-  const [waypoints,setWaypoints] = useState([]);
+  const [waypoints,setWaypoints] = useState(initialWaypoints());
   const [playing,setPlaying] = useState(false);
   const playCancelRef = useRef(false);
 
@@ -527,13 +613,63 @@ export default function App(){
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   useEffect(()=>{estRef.current=estp;},[estp]);
 
+  // Trajectory memory — waypoints survive a reload/browser restart.
+  // Pure localStorage, a few KB of text on the tablet's own disk — the Pi
+  // never sees this, no RAM cost on the hardware side.
+  useEffect(()=>{ safeSet("armctrl_waypoints", JSON.stringify(waypoints)); },[waypoints]);
+
   const log=useCallback((msg,type="info")=>{setLogs(p=>[{msg,type,time:ts()},...p.slice(0,99)]);},[]);
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
 
   const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
   const setSp  = useCallback(v=>{ setSpRaw(v); safeSet("armctrl_speed", String(v)); },[]);
 
+  // ── dispatchCommand(): the single chokepoint every control goes through.
+  //    Swapping ROS2 <-> MQTT <-> offline simulation later means editing the
+  //    branches here, not every button handler in the component. ──────────
+  const dispatchCommand = useCallback((type, payload) => {
+    if (mode === "mock") {
+      if (type === "JOINT_COMMAND") {
+        cntRef.current += 1;
+        setTimeout(()=>{
+          setFeed(p=>{ const merged={...p,...payload.joints}; feedRef.current=merged; return merged; });
+        }, 50);
+      } else if (type === "ARM_POWER") {
+        log(`[SIM] arm power → ${payload.on ? "ON" : "OFF"}`, "info");
+      } else if (type === "ESTOP") {
+        setTimeout(()=>{
+          setFeed(p=>{ const merged={...p,...payload.joints}; feedRef.current=merged; return merged; });
+        }, 50);
+      }
+      return;
+    }
+    // ros mode
+    const ROSLIB = window.ROSLIB;
+    if (type === "JOINT_COMMAND") {
+      if (!pubRef.current || !ROSLIB) return;
+      pubRef.current.publish(new ROSLIB.Message({
+        name: JOINTS.map(j=>j.id),
+        position: JOINTS.map(j=>(payload.joints[j.id]*Math.PI)/180),
+        velocity: JOINTS.map(()=>payload.speedMs), effort: [],
+      }));
+      cntRef.current += 1;
+    } else if (type === "ARM_POWER") {
+      if (powerRef.current && ROSLIB) powerRef.current.publish(new ROSLIB.Message({data:payload.on}));
+    } else if (type === "ESTOP") {
+      if (pubRef.current && ROSLIB) pubRef.current.publish(new ROSLIB.Message({
+        name: JOINTS.map(j=>j.id),
+        position: JOINTS.map(j=>(payload.joints[j.id]*Math.PI)/180),
+        velocity: JOINTS.map(()=>0), effort: JOINTS.map(()=>0),
+      }));
+    }
+  }, [mode, log]);
+
   const connect=useCallback(()=>{
+    if (mode === "mock") {
+      setConn("connecting"); log("[SIM] Simulating connection…","warn");
+      setTimeout(()=>{ setConn("connected"); log("[SIM] Simulated connection established — no hardware required","success"); }, 400);
+      return;
+    }
     const ROSLIB=window.ROSLIB;
     if(!ROSLIB){log("roslib.js not loaded — add CDN to index.html","error");return;}
     if(rosRef.current) rosRef.current.close();
@@ -554,37 +690,44 @@ export default function App(){
     });
     ros.on("error",e=>log(`Error: ${e?.message??e}`,"error"));
     ros.on("close",()=>{setConn("disconnected");log("Connection closed","warn");pubRef.current=null;subRef.current=null;});
-  },[url,log]);
+  },[url,log,mode]);
 
-  const disconnect=useCallback(()=>{if(rosRef.current){rosRef.current.close();rosRef.current=null;}},[]);
+  const disconnect=useCallback(()=>{
+    if (mode === "mock") { setConn("disconnected"); log("[SIM] Simulated connection closed","warn"); return; }
+    if(rosRef.current){rosRef.current.close();rosRef.current=null;}
+  },[mode,log]);
 
   const publish=useCallback((ov)=>{
-    if(!pubRef.current||estp) return;
-    const j=ov??joints, sm=[.3,1,2][speed], ROSLIB=window.ROSLIB;
-    pubRef.current.publish(new ROSLIB.Message({
-      name:JOINTS.map(jt=>jt.id),
-      position:JOINTS.map(jt=>(j[jt.id]*Math.PI)/180),
-      velocity:JOINTS.map(()=>sm),effort:[],
-    }));
-    cntRef.current+=1;
-  },[joints,estp,speed]);
+    if(estp) return;
+    if(mode==="ros" && !pubRef.current) return;
+    const j=ov??joints, sm=[.3,1,2][speed];
+    dispatchCommand("JOINT_COMMAND", {joints:j, speedMs:sm});
+  },[joints,estp,speed,mode,dispatchCommand]);
 
   const handleEstop=useCallback(()=>{
     setEstp(true); log("⚠ EMERGENCY STOP ACTIVATED","error");
-    if(pubRef.current&&window.ROSLIB){
-      pubRef.current.publish(new window.ROSLIB.Message({
-        name:JOINTS.map(j=>j.id),
-        position:JOINTS.map(j=>(joints[j.id]*Math.PI)/180),
-        velocity:JOINTS.map(()=>0),effort:JOINTS.map(()=>0),
-      }));
-    }
-  },[joints,log]);
+    dispatchCommand("ESTOP", {joints});
+  },[joints,log,dispatchCommand]);
 
   const handleResume=()=>setConfirmAction({
     title:"Resume motion?", body:"Clears the emergency stop and allows the arm to move again. Make sure the area is clear.",
     confirmLabel:"Resume", danger:false,
     run:()=>{ setEstp(false); log("Emergency stop cleared — motion resumed","success"); },
   });
+
+  // Spacebar E-Stop — single native keydown listener, negligible CPU/RAM cost.
+  // Ignored while focus is in a text field/select so it doesn't hijack typing.
+  useEffect(()=>{
+    const onKey=(e)=>{
+      if(e.code!=="Space") return;
+      const tag=document.activeElement?.tagName;
+      if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT") return;
+      e.preventDefault();
+      if(!estRef.current) handleEstop();
+    };
+    window.addEventListener("keydown",onKey);
+    return ()=>window.removeEventListener("keydown",onKey);
+  },[handleEstop]);
 
   const stepJ=useCallback((id,delta)=>{
     if(estRef.current) return;
@@ -608,7 +751,6 @@ export default function App(){
     run:()=>{ setJ(initJ()); log("All joints → 0°","info"); },
   });
 
-  // ── Operator-saved positions ────────────────────────────────────────────
   const addPreset=()=>{
     const name = window.prompt("Name this position (this is the arm's CURRENT pose):");
     if(!name || !name.trim()) return;
@@ -629,8 +771,7 @@ export default function App(){
     },
   });
 
-  // ── Teach Mode ──────────────────────────────────────────────────────────
-  const publishPower=(on)=>{ if(powerRef.current&&window.ROSLIB) powerRef.current.publish(new window.ROSLIB.Message({data:on})); };
+  const publishPower=(on)=>dispatchCommand("ARM_POWER",{on});
   const requestArmPower=(on)=>setConfirmAction({
     title: on ? "Re-energize motors?" : "Enter Teach Mode?",
     body: on
@@ -677,8 +818,26 @@ export default function App(){
     });
   };
 
-  // ── Closed-Loop Accuracy: repeatability test ────────────────────────────
   const stopTest=()=>{ testCancelRef.current=true; };
+
+  // Native CSV export — Blob + temporary <a download>, no library needed.
+  const exportTestCSV=()=>{
+    if(testResults.length===0) return;
+    const avg=testResults.reduce((a,r)=>a+r.err,0)/testResults.length;
+    const max=Math.max(...testResults.map(r=>r.err));
+    const meta=`# target,${testTarget}\n# avg_error_deg,${avg.toFixed(3)}\n# max_error_deg,${max.toFixed(3)}\n# runs,${testResults.length}\n# exported,${new Date().toISOString()}\n`;
+    const rows=testResults.map(r=>`${r.run},${r.err.toFixed(3)}`).join("\n");
+    const csv=`${meta}run,error_deg\n${rows}\n`;
+    const blob=new Blob([csv],{type:"text/csv"});
+    const objUrl=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=objUrl;
+    a.download=`repeatability_${testTarget.replace(/\s+/g,"_")}_${Date.now()}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(objUrl);
+    log(`Exported ${testResults.length} test runs as CSV`,"success");
+  };
+
   const runRepeatabilityTest=(targetPreset,cycles=10)=>{
     const home = presets.find(p=>p.name==="Home") || DEFAULT_PRESETS[0];
     setConfirmAction({
@@ -703,7 +862,7 @@ export default function App(){
     });
   };
 
-  const diag = useDiagnostics(conn==="connected", rosRef.current);
+  const diag = useDiagnostics(conn==="connected" && mode==="ros", rosRef.current);
   const maxErr=Math.max(...JOINTS.map(j=>Math.abs((joints[j.id]||0)-(feed[j.id]||0))));
   const anyNear=JOINTS.some(j=>nearLim(joints[j.id],j));
   const dis=estp||conn!=="connected"||!armPower;
@@ -735,8 +894,16 @@ export default function App(){
           <div className="hdr-center">
             <div className="hdr-url-wrap">
               <span className="hdr-url-label">ws://</span>
-              <input className="hdr-url-input" value={url.replace(/^ws:\/\//,"")} onChange={e=>setUrl("ws://"+e.target.value)} disabled={conn==="connected"} spellCheck={false}/>
+              <input className="hdr-url-input" value={url.replace(/^ws:\/\//,"")} onChange={e=>setUrl("ws://"+e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
             </div>
+            <button
+              className={`mode-toggle ${mode==="mock"?"sim":""}`}
+              onClick={()=>setMode(mode==="ros"?"mock":"ros")}
+              disabled={conn!=="disconnected"}
+              title="Local Simulation Mode — test Teach Mode & Repeatability without hardware"
+            >
+              {mode==="mock"?"SIM":"LIVE"}
+            </button>
             <button className="hbtn conn" onClick={connect} disabled={conn!=="disconnected"}>{conn==="connecting"?"Connecting…":"Connect"}</button>
             <button className="hbtn disc" onClick={disconnect} disabled={conn==="disconnected"}>Disconnect</button>
           </div>
@@ -749,7 +916,7 @@ export default function App(){
             </div>
             {estp
               ?<button className="hbtn resume" onClick={handleResume}>CLEAR EMERGENCY</button>
-              :<button className="hbtn estop" onClick={handleEstop}>⬛ Emergency Stop</button>
+              :<button className="hbtn estop" onClick={handleEstop} title="Emergency Stop — or press SPACE">⬛ Emergency Stop</button>
             }
           </div>
         </header>
@@ -931,7 +1098,7 @@ export default function App(){
             <div style={{flexShrink:0,borderTop:"1px solid var(--b0)"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 12px",borderBottom:"1px solid var(--b0)",background:"rgba(255,255,255,.01)"}}>
                 <span style={{fontFamily:"JetBrains Mono",fontSize:10,fontWeight:700,color:"var(--hi)",letterSpacing:".05em",textTransform:"uppercase"}}>ROS2 Diagnostics</span>
-                <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>rosbridge · live</span>
+                <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>{mode==="mock"?"simulated · offline":"rosbridge · live"}</span>
               </div>
 
               <div className="diag-strip">
@@ -975,7 +1142,7 @@ export default function App(){
                   </div>
                 </div>
 
-                {/* ③ Repeatability Test */}
+                {/* ③ Repeatability Test — consolidated: controls, live results, and summary in ONE panel */}
                 <div className="diag-sec">
                   <div className="diag-sec-hdr">
                     <span className="diag-sec-title">Repeatability Test</span>
@@ -990,27 +1157,36 @@ export default function App(){
                       ? <button className="rt-btn" onClick={()=>runRepeatabilityTest(testPreset,10)} disabled={conn!=="connected"||!armPower}>RUN ×10</button>
                       : <button className="rt-btn stop" onClick={stopTest}>STOP</button>}
                   </div>
-                  <div className="rt-scroll">
-                    {testResults.length===0 && !testRunning && <div className="rt-empty">No results yet — motors must be on</div>}
-                    {testResults.map(r=>(
-                      <div className="rt-line" key={r.run}>
-                        <span style={{width:16,color:"var(--lo)"}}>#{r.run}</span>
-                        <div className="rt-bar-track"><div className="rt-bar-fill" style={{width:`${Math.min(100,r.err*10)}%`,background:r.err>3?"var(--amb)":"var(--grn)"}}/></div>
-                        <span style={{width:34,textAlign:"right",color:r.err>3?"var(--amb)":"var(--grn)",fontWeight:700}}>{r.err.toFixed(2)}°</span>
-                      </div>
-                    ))}
+                  <div className="rt-chart-wrap">
+                    {testResults.length===0 && !testRunning
+                      ? <div className="rt-empty">No results yet — motors must be on</div>
+                      : <TrendChart results={testResults} />}
                   </div>
+                  {testResults.length>0 && (
+                    <div className={`rt-summary ${testMax>3?"warn":"ok"}`}>
+                      <span>Avg <b>{testAvg.toFixed(2)}°</b></span>
+                      <span>Max <b>{testMax.toFixed(2)}°</b></span>
+                      <span>Runs <b>{testResults.length}</b></span>
+                      <button className="rt-csv" onClick={exportTestCSV}>DOWNLOAD CSV</button>
+                    </div>
+                  )}
                 </div>
 
-                {/* ④ ROS Nodes + Foxglove launch */}
-                <div className="diag-sec" style={{minWidth:190}}>
+                {/* ④ ROS Nodes — Foxglove locked at TOP, node list scrolls below it */}
+                <div className="diag-sec nodes-sec" style={{minWidth:190}}>
                   <div className="diag-sec-hdr">
                     <span className="diag-sec-title">ROS2 Nodes</span>
                     <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>{diag.info.nodes.length} active</span>
                   </div>
-                  <div style={{flex:1,overflow:"hidden auto",minHeight:0}}>
+                  <button
+                    className="fg-link"
+                    onClick={()=>{ setShowFg(true); log("Opened Foxglove 3D view","info"); }}
+                  >
+                    OPEN FOXGLOVE 3D VIEW
+                  </button>
+                  <div className="nodes-scroll">
                     {diag.info.nodes.length===0
-                      ?<div style={{fontFamily:"JetBrains Mono",padding:"8px 10px",fontSize:9,color:"var(--lo)"}}>No nodes yet — connect first</div>
+                      ?<div style={{fontFamily:"JetBrains Mono",padding:"8px 10px",fontSize:9,color:"var(--lo)"}}>{mode==="mock"?"Simulation mode — no ROS nodes":"No nodes yet — connect first"}</div>
                       :diag.info.nodes.map(n=>(
                         <div key={n} style={{padding:"4px 10px",fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",borderBottom:"1px solid var(--b0)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={n}>
                           <span style={{color:"var(--cyan)",marginRight:4}}>▸</span>{n}
@@ -1018,7 +1194,6 @@ export default function App(){
                       ))
                     }
                   </div>
-                  <button className="fg-link" onClick={()=>{ if(conn==="connected"){ setShowFg(true); log("Opened Foxglove 3D view","info"); } }} disabled={conn!=="connected"}>🔮 Open Foxglove 3D View</button>
                 </div>
               </div>
             </div>
@@ -1046,30 +1221,16 @@ export default function App(){
                   <div className="fbrow" key={j.id}>
                     <div className="fbtop">
                       <span style={{fontSize:9,color:"var(--mid)"}}>{j.label}</span>
-                      <span style={{fontFamily:"JetBrains Mono",fontSize:8,color:err>3?"var(--amb)":"var(--lo)"}}>Δ{err.toFixed(1)}{j.unit}</span>
+                      <span style={{fontFamily:"JetBrains Mono",fontSize:8,color:deltaColor(err)}}>Δ{err.toFixed(1)}{j.unit}</span>
                     </div>
                     <div className="fbbot">
                       <span style={{fontFamily:"JetBrains Mono",fontSize:10,color:j.color}}>CMD {cmd.toFixed(1)}{j.unit}</span>
                       <span style={{fontFamily:"JetBrains Mono",fontSize:10,color:"var(--mid)"}}>FB {fb.toFixed(1)}{j.unit}</span>
                     </div>
+                    <div className="fbbar-track"><div className="fbbar-fill" style={{width:`${deltaPct(err)}%`,background:deltaColor(err)}}/></div>
                   </div>
                 );
               })}
-
-              {/* Freed-up space now used for the last test's summary, per Function 3 */}
-              <div className="test-summary">
-                <div className="test-summary-title">Last Repeatability Test</div>
-                {testResults.length===0 ? (
-                  <div className="test-summary-row"><span>No test run yet</span></div>
-                ) : (
-                  <>
-                    <div className={`test-summary-row ${testAvg>3?"warn":"ok"}`}><span>Avg Error</span><b>{testAvg.toFixed(2)}°</b></div>
-                    <div className={`test-summary-row ${testMax>3?"warn":"ok"}`}><span>Max Error</span><b>{testMax.toFixed(2)}°</b></div>
-                    <div className="test-summary-row"><span>Runs</span><b>{testResults.length}</b></div>
-                    <div className="test-summary-row"><span>Target</span><b>{testTarget}</b></div>
-                  </>
-                )}
-              </div>
             </div>
           </aside>
 
@@ -1078,10 +1239,10 @@ export default function App(){
         {/* ── STATUS STRIP ── */}
         <div className="strip">
           <div className={`sdot ${conn==="connected"?"ok":conn==="connecting"?"warn":"err"}`}/>
-          <span>ros2 bridge</span>
+          <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
           <span style={{color:"var(--lo)"}}>·</span>
-          <span style={{color:"var(--lo)"}}>{url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v3.1 · {ts()}</span>
+          <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v3.2 · {ts()}</span>
         </div>
 
       </div>
