@@ -104,6 +104,8 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 
 .mode-toggle{padding:4px 10px;border-radius:14px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid);flex-shrink:0}
 .mode-toggle.sim{border-color:var(--amb);color:var(--amb);background:var(--adim)}
+.mode-toggle.demo{border-color:var(--purple);color:var(--purple);background:var(--pdim)}
+.mode-toggle.demo:hover:not(:disabled){background:var(--purple);color:#0D1117}
 .mode-toggle:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .mode-toggle:disabled{opacity:.4;cursor:not-allowed}
 
@@ -352,6 +354,7 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .estop-ov{position:fixed;inset:0;background:rgba(255,59,59,.07);border:3px solid var(--red);pointer-events:none;z-index:999;animation:ep .5s ease-in-out infinite alternate}
 @keyframes ep{from{opacity:.5}to{opacity:1}}
 .estop-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--red);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:.1em;padding:5px 22px;border-radius:0 0 8px 8px;z-index:1000}
+.demo-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--purple);color:#0D1117;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;padding:3px 16px;border-radius:0 0 6px 6px;z-index:998}
 
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-thumb{background:var(--b0);border-radius:2px}
@@ -597,6 +600,12 @@ export default function App(){
   const [mode,setModeRaw] = useState(initialMode());
   const setMode = useCallback(v=>{ setModeRaw(v); safeSet("armctrl_mode", v); }, []);
 
+  // Demo Mode — bypasses confirmation dialogs for a live presentation.
+  // Off by default every load on purpose: this should never be a state
+  // that silently survives from a real operating session into a demo,
+  // or vice versa.
+  const [demoMode,setDemoMode] = useState(false);
+
   const [presets,setPresets] = useState(DEFAULT_PRESETS);
 
   const [armPower,setArmPower] = useState(true);
@@ -611,6 +620,8 @@ export default function App(){
 
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
+  const logHistoryRef=useRef([]); // full session history — ref, not state, so it never triggers a re-render
+  const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
   useEffect(()=>{estRef.current=estp;},[estp]);
 
   // Trajectory memory — waypoints survive a reload/browser restart.
@@ -618,7 +629,14 @@ export default function App(){
   // never sees this, no RAM cost on the hardware side.
   useEffect(()=>{ safeSet("armctrl_waypoints", JSON.stringify(waypoints)); },[waypoints]);
 
-  const log=useCallback((msg,type="info")=>{setLogs(p=>[{msg,type,time:ts()},...p.slice(0,99)]);},[]);
+  const log=useCallback((msg,type="info")=>{
+    // Snapshot of actual joint feedback at the moment of the event — lets the
+    // exported log correlate "what happened" with "where the arm actually was."
+    const entry={msg,type,time:ts(),iso:new Date().toISOString(),joints:{...feedRef.current}};
+    logHistoryRef.current.push(entry);
+    if(logHistoryRef.current.length>5000) logHistoryRef.current.shift(); // sane ceiling, not truly infinite
+    setLogs(p=>[entry,...p.slice(0,99)]);
+  },[]);
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
 
   const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
@@ -665,6 +683,8 @@ export default function App(){
   }, [mode, log]);
 
   const connect=useCallback(()=>{
+    manualDisconnectRef.current=false;
+    clearTimeout(reconnectTimerRef.current);
     if (mode === "mock") {
       setConn("connecting"); log("[SIM] Simulating connection…","warn");
       setTimeout(()=>{ setConn("connected"); log("[SIM] Simulated connection established — no hardware required","success"); }, 400);
@@ -673,9 +693,11 @@ export default function App(){
     const ROSLIB=window.ROSLIB;
     if(!ROSLIB){log("roslib.js not loaded — add CDN to index.html","error");return;}
     if(rosRef.current) rosRef.current.close();
-    setConn("connecting"); log(`Connecting → ${url}`,"warn");
+    setConn("connecting");
+    log(reconnectAttemptRef.current>0 ? `Auto-reconnecting (attempt ${reconnectAttemptRef.current}/8) → ${url}` : `Connecting → ${url}`,"warn");
     const ros=new ROSLIB.Ros({url}); rosRef.current=ros;
     ros.on("connection",()=>{
+      reconnectAttemptRef.current=0; // reset backoff on success
       setConn("connected"); log("ROS2 bridge connected","success");
       pubRef.current=new ROSLIB.Topic({ros,name:"/joint_commands",messageType:"sensor_msgs/JointState"});
       subRef.current=new ROSLIB.Topic({ros,name:"/joint_states",  messageType:"sensor_msgs/JointState"});
@@ -688,11 +710,30 @@ export default function App(){
       });
       log("Subscribed /joint_states","info");
     });
-    ros.on("error",e=>log(`Error: ${e?.message??e}`,"error"));
-    ros.on("close",()=>{setConn("disconnected");log("Connection closed","warn");pubRef.current=null;subRef.current=null;});
+    ros.on("error",e=>{ if(reconnectAttemptRef.current===0) log(`Error: ${e?.message??e}`,"error"); });
+    ros.on("close",()=>{
+      pubRef.current=null; subRef.current=null;
+      // Auto-retry unless the user explicitly hit Disconnect. Capped at 8
+      // attempts with exponential backoff (max 5s) — infinite silent retry
+      // would mask a genuinely dead Pi; this surfaces a clear give-up state
+      // instead of a badge that spins forever with no explanation.
+      if(!manualDisconnectRef.current && mode==="ros" && reconnectAttemptRef.current<8){
+        const delay=Math.min(1000*Math.pow(1.5,reconnectAttemptRef.current),5000);
+        log(`Connection dropped — retrying in ${(delay/1000).toFixed(1)}s`,"warn");
+        reconnectTimerRef.current=setTimeout(()=>{ reconnectAttemptRef.current+=1; connect(); },delay);
+      } else {
+        if(reconnectAttemptRef.current>=8) log("Auto-reconnect gave up after 8 attempts — press Connect to retry manually","error");
+        else log("Connection closed","warn");
+        setConn("disconnected");
+        reconnectAttemptRef.current=0;
+      }
+    });
   },[url,log,mode]);
 
   const disconnect=useCallback(()=>{
+    manualDisconnectRef.current=true;
+    clearTimeout(reconnectTimerRef.current);
+    reconnectAttemptRef.current=0;
     if (mode === "mock") { setConn("disconnected"); log("[SIM] Simulated connection closed","warn"); return; }
     if(rosRef.current){rosRef.current.close();rosRef.current=null;}
   },[mode,log]);
@@ -714,6 +755,17 @@ export default function App(){
     confirmLabel:"Resume", danger:false,
     run:()=>{ setEstp(false); log("Emergency stop cleared — motion resumed","success"); },
   });
+  // NOTE: Resume deliberately always goes through the real confirm dialog,
+  // even in Demo Mode. Clearing an emergency stop is the one action where
+  // an extra half-second of friction is worth keeping no matter what.
+
+  // Every OTHER confirmation-gated action goes through this single
+  // chokepoint. In Demo Mode it runs immediately and logs a [DEMO] tag
+  // instead of popping the dialog — one place to reason about, not five.
+  const confirmOrRun=(opts)=>{
+    if(demoMode){ opts.run(); log(`[DEMO] ${opts.title}`,"info"); return; }
+    setConfirmAction(opts);
+  };
 
   // Spacebar E-Stop — single native keydown listener, negligible CPU/RAM cost.
   // Ignored while focus is in a text field/select so it doesn't hijack typing.
@@ -740,12 +792,12 @@ export default function App(){
 
   useEffect(()=>{if(conn==="connected"&&!estp) publish(joints);},[joints]); // eslint-disable-line
 
-  const requestPreset=(p)=>setConfirmAction({
+  const requestPreset=(p)=>confirmOrRun({
     title:`Move to "${p.name}"?`, body:"The arm will move to this saved position. Make sure the area is clear.",
     confirmLabel:"Move Arm", danger:false,
     run:()=>{ setJ(p.values); log(`Preset applied: ${p.name}`,"info"); },
   });
-  const requestReset=()=>setConfirmAction({
+  const requestReset=()=>confirmOrRun({
     title:"Reset all joints to 0°?", body:"This moves every joint back to zero. Make sure the area is clear.",
     confirmLabel:"Reset", danger:false,
     run:()=>{ setJ(initJ()); log("All joints → 0°","info"); },
@@ -761,7 +813,7 @@ export default function App(){
     setPresets(p=>[...p, { name:trimmed, icon:"★", values:{...joints}, builtin:false }]);
     log(`Saved current position as "${trimmed}"`,"success");
   };
-  const deletePreset=(name)=>setConfirmAction({
+  const deletePreset=(name)=>confirmOrRun({
     title:`Delete "${name}"?`, body:"Removes this saved position. This can't be undone.",
     confirmLabel:"Delete", danger:true,
     run:()=>{
@@ -772,7 +824,7 @@ export default function App(){
   });
 
   const publishPower=(on)=>dispatchCommand("ARM_POWER",{on});
-  const requestArmPower=(on)=>setConfirmAction({
+  const requestArmPower=(on)=>confirmOrRun({
     title: on ? "Re-energize motors?" : "Enter Teach Mode?",
     body: on
       ? "Motors will re-energize and hold current position. Make sure hands are clear."
@@ -791,7 +843,7 @@ export default function App(){
     log(`Waypoint recorded (Point ${waypoints.length+1})`,"success");
   };
   const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id));
-  const clearWaypoints=()=>setConfirmAction({
+  const clearWaypoints=()=>confirmOrRun({
     title:"Clear all waypoints?", body:"Deletes the entire recorded trajectory. This can't be undone.",
     confirmLabel:"Clear", danger:true,
     run:()=>{ setWaypoints([]); log("Trajectory cleared","warn"); },
@@ -799,7 +851,7 @@ export default function App(){
   const stopPlayback=()=>{ playCancelRef.current=true; };
   const playTrajectory=()=>{
     if(waypoints.length===0) return;
-    setConfirmAction({
+    confirmOrRun({
       title:"Play recorded trajectory?",
       body:`Moves through ${waypoints.length} waypoint(s) in sequence. Motors must be powered ON. Make sure the area is clear.`,
       confirmLabel:"Play", danger:false,
@@ -816,6 +868,33 @@ export default function App(){
         log(playCancelRef.current?"Playback stopped":"Playback complete", playCancelRef.current?"warn":"success");
       },
     });
+  };
+
+  // Native CSV export of the full session history — everything log() has
+  // ever recorded this session (connects, presets, waypoints, e-stops,
+  // tests), not just the last 100 shown on screen. Each row also carries
+  // the actual joint feedback at that moment, so the log doubles as a
+  // position-correlated timeline, not just a message list.
+  const exportSystemLogCSV=()=>{
+    const hist=logHistoryRef.current;
+    if(hist.length===0){ log("No system log entries to export","warn"); return; }
+    const esc=(s)=>`"${String(s).replace(/"/g,'""')}"`;
+    const jointCols=JOINTS.map(j=>j.short).join(",");
+    const header=`timestamp_iso,time,type,message,${jointCols}\n`;
+    const rows=hist.map(e=>{
+      const j=e.joints||{};
+      const jointVals=JOINTS.map(jt=>(j[jt.id]??0).toFixed(2)).join(",");
+      return `${e.iso},${e.time},${e.type},${esc(e.msg)},${jointVals}`;
+    }).join("\n");
+    const csv=`# ARM Control — full session log\n# exported,${new Date().toISOString()}\n# entries,${hist.length}\n${header}${rows}\n`;
+    const blob=new Blob([csv],{type:"text/csv"});
+    const objUrl=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=objUrl;
+    a.download=`arm_session_log_${Date.now()}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(objUrl);
+    log(`Exported full session log (${hist.length} entries) as CSV`,"success");
   };
 
   const stopTest=()=>{ testCancelRef.current=true; };
@@ -840,7 +919,7 @@ export default function App(){
 
   const runRepeatabilityTest=(targetPreset,cycles=10)=>{
     const home = presets.find(p=>p.name==="Home") || DEFAULT_PRESETS[0];
-    setConfirmAction({
+    confirmOrRun({
       title:"Run repeatability test?",
       body:`Cycles between Home and "${targetPreset.name}" ${cycles} times, logging position error each stop (~${Math.round(cycles*3)}s).`,
       confirmLabel:"Run Test", danger:false,
@@ -874,6 +953,7 @@ export default function App(){
     <>
       <style>{CSS}</style>
       {estp&&<><div className="estop-ov"/><div className="estop-banner">⬛ EMERGENCY STOP — ALL MOTION HALTED</div></>}
+      {demoMode&&!estp&&<div className="demo-banner">DEMO MODE — CONFIRMATIONS SKIPPED</div>}
       <ConfirmDialog
         open={!!confirmAction} title={confirmAction?.title} body={confirmAction?.body}
         confirmLabel={confirmAction?.confirmLabel} danger={confirmAction?.danger}
@@ -903,6 +983,13 @@ export default function App(){
               title="Local Simulation Mode — test Teach Mode & Repeatability without hardware"
             >
               {mode==="mock"?"SIM":"LIVE"}
+            </button>
+            <button
+              className={`mode-toggle ${demoMode?"demo":""}`}
+              onClick={()=>setDemoMode(d=>!d)}
+              title="Demo Mode — skips confirmation dialogs for a live presentation. Resume-from-E-stop always still confirms."
+            >
+              {demoMode?"DEMO ON":"DEMO OFF"}
             </button>
             <button className="hbtn conn" onClick={connect} disabled={conn!=="disconnected"}>{conn==="connecting"?"Connecting…":"Connect"}</button>
             <button className="hbtn disc" onClick={disconnect} disabled={conn==="disconnected"}>Disconnect</button>
@@ -1083,7 +1170,10 @@ export default function App(){
                   <div className="log-section">
                     <div className="log-hdr">
                       <span style={{fontSize:10,fontWeight:700,color:"var(--hi)",letterSpacing:".04em",textTransform:"uppercase"}}>System Log</span>
-                      <button style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",background:"var(--panel)",padding:"1px 6px",borderRadius:4,border:"1px solid var(--b0)",cursor:"pointer"}} onClick={()=>setLogs([])}>Clear</button>
+                      <div style={{display:"flex",gap:4}}>
+                        <button style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",background:"var(--panel)",padding:"1px 6px",borderRadius:4,border:"1px solid var(--b0)",cursor:"pointer"}} onClick={exportSystemLogCSV} title="Download full session history as CSV">Export</button>
+                        <button style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--mid)",background:"var(--panel)",padding:"1px 6px",borderRadius:4,border:"1px solid var(--b0)",cursor:"pointer"}} onClick={()=>setLogs([])}>Clear</button>
+                      </div>
                     </div>
                     <div className="logwrap">
                       {logs.length===0&&<div className="lent"><span className="ltm">{ts()}</span><span className="lmsg">Waiting for connection…</span></div>}
