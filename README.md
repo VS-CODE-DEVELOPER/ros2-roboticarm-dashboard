@@ -1,199 +1,151 @@
-# ARM · CONTROL — ROS2 Robotic Arm Dashboard
+# ARM · CONTROL — 6-DOF Robotic Arm Dashboard
 
-> A real-time web-based control dashboard for a 6-DOF robotic arm, built on ROS2, rosbridge, and React/Vite. Connects to a Raspberry Pi over a private VPN tunnel and runs fully in the browser with no backend required.
+> A real-time, browser-based control dashboard for a 6-DOF web-controlled teachable robotic arm. Built on ROS2 + rosbridge with React/Vite, running entirely client-side with no application backend of its own. Includes an offline Local Simulation Mode so the UI can be developed and demoed without any hardware attached.
+
+**Project:** Web-Controlled ROS2 Teachable Robotic Arm — Embedded Systems Final Project, Group G201
+**Team:** Vidhan Shivani (software, electronics, system architecture) · Simon Rapa (CAD/mechanical)
+
+---
+
+## What This Is
+
+The dashboard is the operator interface for a 6-axis robotic arm and directly implements the project's three core functions:
+
+| Function | What it does |
+|---|---|
+| **1. Web Control** | Operate and monitor the arm entirely through the browser — joint sliders, Cartesian jog, saved positions, live 2D preview |
+| **2. Teach Mode** | De-energize the motors, physically guide the arm by hand, record waypoints, and play back recorded trajectories |
+| **3. Closed-Loop Accuracy** | Automated repeatability testing against real encoder feedback, with color-coded delta bars, a trend chart, and CSV export for report evidence |
 
 ---
 
 ## System Architecture
 
 ```
-Browser (Vercel)
-      │
-      │  WebSocket  ws://<your-pi-ip>:9090
-      ▼
-rosbridge_websocket  (Raspberry Pi)
-      │
-      │  ROS2 Topics
-      ▼
-Robot ROS2 Nodes  ──►  Servo / Motor Drivers  ──►  Arm Hardware
-      │
-      ▼
-/joint_states feedback  (back to browser)
+Browser (React 18 + Vite dashboard)
+        │
+        │  WebSocket  ws://<pi-host>:9090
+        ▼
+rosbridge_websocket  (Raspberry Pi, Docker)
+        │
+        │  ROS2 topics
+        ▼
+Serial Bridge Node  ──►  ESP32-S2  ──►  Steppers / Servos
+        │                              (arm hardware)
+        │                                    │
+        ▼                                    ▼
+/joint_states feedback              AS5600 encoders (closed-loop)
+        │
+        ▼
+Foxglove Studio (3D digital twin, separate rosbridge client)
 ```
 
-### Network Stack
+**Transport layer:** all button/slider actions go through a single `dispatchCommand()` chokepoint in the dashboard, rather than components calling ROS2 APIs directly. Today that chokepoint targets rosbridge over WebSocket; the abstraction exists specifically so a future transport (e.g. MQTT between the Pi and ESP32) can be swapped in without touching UI code.
 
+### Network Stack
 | Layer | Technology |
 |---|---|
-| Remote access | Tailscale VPN (private mesh network) |
-| ROS2 ↔ Browser bridge | rosbridge_websocket on port `9090` |
-| Frontend | React 18 + Vite, deployed on Vercel |
-| ROS2 JS client | roslibjs (loaded via CDN) |
+| Remote access to the Pi | Tailscale VPN (private mesh network) |
+| ROS2 ↔ Browser bridge | `rosbridge_websocket`, port `9090` |
+| Dashboard hosting | Nginx on the Pi (static build), self-hosted — not deployed to Vercel in production |
+| 3D visualization | [Foxglove Studio](https://app.foxglove.dev), connected via the same rosbridge WebSocket |
+
+The Pi only ever serves static files and relays WebSocket traffic — the dashboard itself runs on whatever device opens it (laptop/tablet), keeping the Pi's 1GB RAM budget free for ROS2, the serial bridge, and Docker.
 
 ---
 
 ## Features
 
 ### Control
-- **6-joint control** — Base Rotation, Shoulder, Elbow, Wrist Pitch, Wrist Roll, Gripper
-- **Joint sliders** with live fill, min/max labels, and colour-coded per joint
-- **±Step buttons** with long-hold for continuous jogging (hold = stream commands)
-- **Numeric input** — type exact degree values directly
-- **Zero per joint** — reset any single joint to 0° with one click
-- **Cartesian Jog** — X/Y/Z axis jog buttons mapped to base joints (hold = continuous)
-- **Speed control** — Slow / Normal / Fast (affects step size and publish rate)
+- 6 independent joint controls — slider, exact numeric entry, or hold-to-jog buttons
+- Cartesian jog panel (X/Y/Z) as a separate tab
+- Speed selector showing real °/s, not just qualitative labels
+- Built-in presets (Home, Grab Ready, Release, Stow) **plus operator-savable custom positions**
+- Live 2D side-view arm preview
 
-### Safety
-- **Emergency Stop** — instantly halts all motion, publishes zero velocity to `/joint_commands`, locks all controls
-- **Clear & Resume** — re-enables motion after confirming stop
-- **Joint limit warnings** — sliders and values turn amber (NEAR LIMIT) or red (AT LIMIT) with flashing border when within 5° of hardware limits
-- **Emergency overlay** — full-screen red border + banner when Emergency Stop is active
+### Teach Mode
+- Arm Power toggle — de-energizes motors for hand-guiding, blocks web control while active
+- Waypoint recording from live encoder feedback
+- Trajectory playback with stop control
+- **Trajectory memory** — waypoints persist across page reloads (localStorage)
 
-### Presets
-| Name | Description |
-|---|---|
-| Home | All joints at 0° |
-| Grab Ready | Arm extended in pick position |
-| Release | Gripper fully open |
-| Stow | Arm folded for safe transport |
+### Closed-Loop Accuracy
+- Commanded-vs-actual feedback per joint with color-coded delta bars (green < 1°, amber 1–3°, red > 3°)
+- Repeatability test tool — cycles the arm N times against a target, logs error per run
+- Custom-built SVG trend chart (no charting library — kept the bundle light on purpose)
+- One-click CSV export of test results for the technical report
 
-### Visualisation
-- **2D arm preview** — live SVG side-view showing Upper Arm, Forearm, Wrist, Gripper segments updating in real-time with labelled segments and joint markers
-- **Foxglove 3D integration** — placeholder ready for Foxglove WebGL panel (planned)
+### Diagnostics & Safety
+- ROS2 topic/node health monitor
+- Spacebar Emergency Stop (plus the on-screen button), always accessible except while typing in a field
+- Confirmation dialogs on every action that moves real hardware
+- **Demo Mode** — bypasses confirmations for a live presentation; Resume-from-E-stop is deliberately exempt and always confirms regardless
+- **Auto-reconnect** with capped exponential backoff (gives up cleanly after 8 attempts instead of retrying forever)
+- **Full session log export** — every logged event, timestamped and correlated with actual joint position at that moment, downloadable as CSV
 
-### Diagnostics Panel
-- **System status KPIs** — Bridge status, ROS node count, `/joint_states` Hz, `/cmd_vel` Hz
-- **Topic bus table** — live message count, frequency, and last-seen timestamp per topic
-- **Velocity vector canvas** — live arrow visualisation of `/cmd_vel` linear and angular velocity
-- **ROS2 node list** — auto-discovered active nodes via `/rosapi/nodes`
+### Simulation & Testing
+- **Local Simulation Mode (SIM)** — a fully offline mock transport built into the dashboard. Commands are echoed back as fake telemetry after a short delay, so Teach Mode and Repeatability workflows can be fully exercised with zero hardware attached
+- Toggle between LIVE (real rosbridge) and SIM from the header at any time while disconnected
 
-### Telemetry Sidebar
-- Publish rate (Hz), connection status, speed mode
-- Max joint position error (CMD vs FB)
-- Limit warning status, Emergency stop status
-- Per-joint Feedback vs Command comparison
+### Platform
+- Responsive layout — collapses to a single scrollable column with 44×44px touch targets below 1024px, for tablet/phone operation next to the physical arm
+- Dark, high-density HMI-style theme
 
 ---
 
-## ROS2 Topics
+## Tech Stack
 
-| Topic | Direction | Message Type | Purpose |
-|---|---|---|---|
-| `/joint_commands` | Dashboard → Pi | `sensor_msgs/JointState` | Send target joint positions |
-| `/joint_states` | Pi → Dashboard | `sensor_msgs/JointState` | Real joint feedback |
-| `/cmd_vel` | Pi → Dashboard | `geometry_msgs/Twist` | Velocity vector display |
-| `/diagnostics` | Pi → Dashboard | `diagnostic_msgs/DiagnosticArray` | System health (planned) |
+- **React 18 + Vite** — single-file dashboard component, no external state management
+- **roslib.js** — ROS2/rosbridge client (loaded via CDN)
+- **ROS2 Humble** + `rosbridge_suite` — Pi-side middleware
+- No charting library — trend chart is hand-built SVG (~30 lines)
+- No date/CSV libraries — native `Blob` + `URL.createObjectURL` for all exports
 
 ---
 
 ## Getting Started
 
-### Prerequisites
-
-- Node.js 18+
-- Raspberry Pi running ROS2 (Humble or Jazzy)
-- rosbridge installed on the Pi
-- Tailscale installed on both Pi and your machine
-
-### Pi Setup
-
 ```bash
-# Install rosbridge if not already installed
-sudo apt install ros-humble-rosbridge-suite
-
-# Launch the WebSocket bridge (runs on port 9090)
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml
-```
-
-### Local Development
-
-```bash
-# Clone the repo
-git clone https://github.com/your-username/arm-control
-cd arm-control
-
-# Install dependencies
 npm install
-
-# Start dev server
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173)
+`roslib.js` is expected as a CDN script in `index.html` — the dashboard checks for `window.ROSLIB` on connect and logs an error if it's missing rather than failing silently.
 
-### Connect to Your Pi
+**No hardware needed to develop against this UI** — switch the header toggle to **SIM** and every feature (Teach Mode, waypoint playback, repeatability testing) works against the mock transport.
 
-In `src/App.jsx`, set the default WebSocket URL to your Pi's Tailscale IP:
+### Connecting to a real Pi
+1. Set the WebSocket address in the header (defaults to `ws://<current-hostname>:9090`)
+2. Toggle the header mode to **LIVE**
+3. Click **Connect**
 
-```js
-const [url, setUrl] = useState("ws://<your-pi-tailscale-ip>:9090");
-```
-
-Or type it directly into the URL bar in the dashboard header at runtime — no code change needed.
-
-### Add roslib CDN to index.html
-
-```html
-<!-- Add inside <head> in index.html -->
-<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
-```
-
-### Deploy to Vercel
-
+### Production deployment
 ```bash
-# One-command deploy
-npx vercel
-
-# Or push to GitHub — Vercel auto-deploys on every commit
-git push origin main
+npm run build
+rsync -avz --delete ./dist/ pi@<pi-host>:/path/to/dashboard-dist/
 ```
+Served by Nginx on the Pi — see the Docker Compose setup in the deployment docs for the `nginx` + `rosbridge` container pair.
 
 ---
 
-## Project Structure
+## Project Status
 
-```
-arm-control/
-├── public/
-├── src/
-│   ├── App.jsx          # Main dashboard — all components, logic, CSS-in-JS
-│   └── main.jsx         # React entry point
-├── index.html           # Vite HTML shell — roslib CDN goes here
-├── vite.config.js
-└── package.json
-```
-
-> All components (ArmViz, DiagPanel, StepBtn, JogBtn) live in `App.jsx` as a single-file architecture for simplicity of deployment and iteration.
-
----
-
-## Roadmap
-
-- [ ] Foxglove WebGL 3D arm visualiser (replacing 2D SVG)
-- [ ] Gamepad / Xbox controller support mapped to joints
-- [ ] Keyboard shortcuts (WASD + Space for Emergency Stop)
-- [ ] Custom saved pose presets (stored in browser localStorage)
-- [ ] MoveIt2 Cartesian IK integration (real X/Y/Z end-effector control)
-- [ ] Joint trajectory recording and playback
-
----
-
-## Hardware
-
-| Component | Details |
+| Layer | Status |
 |---|---|
-| Controller | Raspberry Pi (ROS2 Humble) |
-| Connectivity | Tailscale VPN over WiFi |
-| Arm | 6-DOF custom design |
-| Interface | rosbridge WebSocket on port 9090 |
+| Dashboard (this repo) | Feature-complete for Functions 1–3 |
+| Pi deployment (Docker, rosbridge, Nginx) | Architected, deployment scripted |
+| Serial bridge node (Pi ↔ ESP32) | Not yet built |
+| ESP32-S2 firmware | Not yet built |
+| Foxglove URDF | Pending from mechanical/CAD side |
+
+The dashboard is intentionally hardware-agnostic at this stage — everything above is designed to be tested end-to-end in Simulation Mode before the physical bring-up begins.
 
 ---
 
-## Built With
-
-- [React 18](https://react.dev) + [Vite](https://vitejs.dev)
-- [ROS2 Humble](https://docs.ros.org/en/humble/)
-- [roslibjs](https://github.com/RobotWebTools/roslibjs)
-- [rosbridge_suite](https://github.com/RobotWebTools/rosbridge_suite)
-- [Tailscale](https://tailscale.com)
-- [Vercel](https://vercel.com)
+## Repository Layout
+```
+/src
+  App.jsx      — the entire dashboard (single-file by design)
+/docs
+  (deployment, wiring, and protocol notes — see project report)
+```
