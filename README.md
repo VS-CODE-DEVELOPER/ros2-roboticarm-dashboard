@@ -249,15 +249,25 @@ Planned improvements include:
 # Repository Structure
 
 ```text
-src/
+├── public/
+│   ├── favicon.svg          # Application favicon
+│   └── icons.svg            # Dashboard icons
 │
-├── App.jsx
+├── src/
+│   ├── assets/              # Static assets
+│   ├── App.css              # Dashboard styling
+│   ├── App.jsx              # Main dashboard application
+│   ├── index.css            # Global styles
+│   └── main.jsx             # React entry point
 │
-docs/
-├── Deployment documentation
-├── Communication protocol
-├── Hardware integration notes
-└── Project report
+├── .gitignore
+├── .oxlintrc.json           # Lint configuration
+├── index.html               # Vite HTML entry
+├── LICENSE
+├── package.json
+├── package-lock.json
+├── README.md
+└── vite.config.js           # Vite configuration
 ```
 
 ---
