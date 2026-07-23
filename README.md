@@ -152,7 +152,7 @@ Several architectural decisions were intentionally made to keep the dashboard li
 - **Browser-native CSV export** — exports are generated using standard browser APIs without additional dependencies.
 - **Local Storage persistence** — operator preferences, presets, and waypoints remain available across browser sessions without requiring cloud storage or databases.
 - **Automatic reconnection strategy** — capped exponential backoff prevents endless retry loops while providing robust recovery from temporary network interruptions.
-- **Single-file dashboard architecture** — the primary dashboard remains self-contained to simplify rapid prototyping, portability, and maintenance during development.
+- **Centralized dashboard architecture** — the application's primary functionality resides within a single React component (App.jsx), simplifying rapid prototyping and maintenance while supporting modular assets and styling.
 
 ---
 
