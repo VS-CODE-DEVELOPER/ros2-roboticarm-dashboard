@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import mqtt from "mqtt"; // <--- ADDED MQTT IMPORT
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
@@ -601,9 +602,6 @@ export default function App(){
   const setMode = useCallback(v=>{ setModeRaw(v); safeSet("armctrl_mode", v); }, []);
 
   // Demo Mode — bypasses confirmation dialogs for a live presentation.
-  // Off by default every load on purpose: this should never be a state
-  // that silently survives from a real operating session into a demo,
-  // or vice versa.
   const [demoMode,setDemoMode] = useState(false);
 
   const [presets,setPresets] = useState(DEFAULT_PRESETS);
@@ -620,21 +618,17 @@ export default function App(){
 
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
-  const logHistoryRef=useRef([]); // full session history — ref, not state, so it never triggers a re-render
+  const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
+  
   useEffect(()=>{estRef.current=estp;},[estp]);
 
-  // Trajectory memory — waypoints survive a reload/browser restart.
-  // Pure localStorage, a few KB of text on the tablet's own disk — the Pi
-  // never sees this, no RAM cost on the hardware side.
   useEffect(()=>{ safeSet("armctrl_waypoints", JSON.stringify(waypoints)); },[waypoints]);
 
   const log=useCallback((msg,type="info")=>{
-    // Snapshot of actual joint feedback at the moment of the event — lets the
-    // exported log correlate "what happened" with "where the arm actually was."
     const entry={msg,type,time:ts(),iso:new Date().toISOString(),joints:{...feedRef.current}};
     logHistoryRef.current.push(entry);
-    if(logHistoryRef.current.length>5000) logHistoryRef.current.shift(); // sane ceiling, not truly infinite
+    if(logHistoryRef.current.length>5000) logHistoryRef.current.shift(); 
     setLogs(p=>[entry,...p.slice(0,99)]);
   },[]);
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
@@ -642,9 +636,6 @@ export default function App(){
   const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
   const setSp  = useCallback(v=>{ setSpRaw(v); safeSet("armctrl_speed", String(v)); },[]);
 
-  // ── dispatchCommand(): the single chokepoint every control goes through.
-  //    Swapping ROS2 <-> MQTT <-> offline simulation later means editing the
-  //    branches here, not every button handler in the component. ──────────
   const dispatchCommand = useCallback((type, payload) => {
     if (mode === "mock") {
       if (type === "JOINT_COMMAND") {
@@ -713,10 +704,6 @@ export default function App(){
     ros.on("error",e=>{ if(reconnectAttemptRef.current===0) log(`Error: ${e?.message??e}`,"error"); });
     ros.on("close",()=>{
       pubRef.current=null; subRef.current=null;
-      // Auto-retry unless the user explicitly hit Disconnect. Capped at 8
-      // attempts with exponential backoff (max 5s) — infinite silent retry
-      // would mask a genuinely dead Pi; this surfaces a clear give-up state
-      // instead of a badge that spins forever with no explanation.
       if(!manualDisconnectRef.current && mode==="ros" && reconnectAttemptRef.current<8){
         const delay=Math.min(1000*Math.pow(1.5,reconnectAttemptRef.current),5000);
         log(`Connection dropped — retrying in ${(delay/1000).toFixed(1)}s`,"warn");
@@ -755,20 +742,12 @@ export default function App(){
     confirmLabel:"Resume", danger:false,
     run:()=>{ setEstp(false); log("Emergency stop cleared — motion resumed","success"); },
   });
-  // NOTE: Resume deliberately always goes through the real confirm dialog,
-  // even in Demo Mode. Clearing an emergency stop is the one action where
-  // an extra half-second of friction is worth keeping no matter what.
 
-  // Every OTHER confirmation-gated action goes through this single
-  // chokepoint. In Demo Mode it runs immediately and logs a [DEMO] tag
-  // instead of popping the dialog — one place to reason about, not five.
   const confirmOrRun=(opts)=>{
     if(demoMode){ opts.run(); log(`[DEMO] ${opts.title}`,"info"); return; }
     setConfirmAction(opts);
   };
 
-  // Spacebar E-Stop — single native keydown listener, negligible CPU/RAM cost.
-  // Ignored while focus is in a text field/select so it doesn't hijack typing.
   useEffect(()=>{
     const onKey=(e)=>{
       if(e.code!=="Space") return;
@@ -870,11 +849,6 @@ export default function App(){
     });
   };
 
-  // Native CSV export of the full session history — everything log() has
-  // ever recorded this session (connects, presets, waypoints, e-stops,
-  // tests), not just the last 100 shown on screen. Each row also carries
-  // the actual joint feedback at that moment, so the log doubles as a
-  // position-correlated timeline, not just a message list.
   const exportSystemLogCSV=()=>{
     const hist=logHistoryRef.current;
     if(hist.length===0){ log("No system log entries to export","warn"); return; }
@@ -899,7 +873,6 @@ export default function App(){
 
   const stopTest=()=>{ testCancelRef.current=true; };
 
-  // Native CSV export — Blob + temporary <a download>, no library needed.
   const exportTestCSV=()=>{
     if(testResults.length===0) return;
     const avg=testResults.reduce((a,r)=>a+r.err,0)/testResults.length;
@@ -948,6 +921,58 @@ export default function App(){
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
+
+  // ─── HARDWARE REMOTE CONTROL (MQTT) ───────────────────────────────────────
+  const lastRemoteCmd = useRef(0);
+
+  useEffect(() => {
+    // Connect to Mosquitto via WebSockets (Port 9001)
+    const client = mqtt.connect("ws://192.168.137.78:9001");
+
+    client.on("connect", () => {
+      console.log("React Connected to Hardware Remote Broker!");
+      client.subscribe("remote/data");
+      log("Hardware Remote Linked", "success");
+    });
+
+    client.on("message", (topic, message) => {
+      if (topic === "remote/data" && !estRef.current) {
+        // Throttle updates to ~20Hz max so React doesn't lag
+        const now = Date.now();
+        if (now - lastRemoteCmd.current < 40) return;
+        lastRemoteCmd.current = now;
+
+        try {
+          const data = JSON.parse(message.toString());
+          const currentSpeed = speed; // Uses your selected Speed (Slow/Normal/Fast)
+          const jogAmount = JOG_DEG[currentSpeed];
+
+          // 1. Deadzone Logic (Assuming 13-bit ADC: 0 to 4095, Center is ~2048)
+          const DEADZONE_LOW = 1700;
+          const DEADZONE_HIGH = 2400;
+
+          // 2. Map Joystick X to Joint 1 (Base)
+          if (data.joyX < DEADZONE_LOW)  stepJ("joint_1", -jogAmount);
+          if (data.joyX > DEADZONE_HIGH) stepJ("joint_1", jogAmount);
+
+          // 3. Map Joystick Y to Joint 2 (Shoulder)
+          if (data.joyY < DEADZONE_LOW)  stepJ("joint_2", -jogAmount);
+          if (data.joyY > DEADZONE_HIGH) stepJ("joint_2", jogAmount);
+
+          // 4. Map Buttons to Actions (e.g., Open/Close Gripper)
+          // Since INPUT_PULLUP is 0 when pressed:
+          if (data.btn1 === 0) stepJ("joint_6", 5);  // Close Gripper
+          if (data.btn2 === 0) stepJ("joint_6", -5); // Open Gripper
+
+        } catch (e) {
+          console.error("MQTT Parsing Error", e);
+        }
+      }
+    });
+
+    return () => client.end();
+  }, [stepJ, speed, log]);
+  // ────────────────────────────────────────────────────────────────────────
 
   return(
     <>
