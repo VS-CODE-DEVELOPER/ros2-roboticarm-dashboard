@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import mqtt from "mqtt";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
@@ -59,6 +60,11 @@ const initialWaypoints = () => {
     return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
 };
+
+const initialRemoteLinked = () => safeGet("armctrl_remote_linked","true") !== "false";
+const initialRemoteUrl = () => safeGet("armctrl_remote_url", null);
+const stripProto = (s) => String(s).replace(/^wss?:\/\//i,"").replace(/^https?:\/\//i,"");
+const hostOf = (wsUrl) => stripProto(wsUrl).split(":")[0].split("/")[0];
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
 const CSS = `
@@ -348,6 +354,24 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
   .body{grid-template-columns:280px 1fr 240px; grid-template-rows:1fr 200px;}
   .test-col{width:260px;}
 }
+
+/* ── Hardware Remote (MQTT) — status lives in Right Panel, config lives in
+     the Diagnostics column of the bottom panel. Nowhere else. ── */
+.jrow.remote{border-left:3px solid var(--grn)}
+.lbdg.remote{background:var(--gdim);color:var(--grn);border:1px solid var(--grn)}
+@keyframes remotepulse{0%{box-shadow:0 0 0 0 rgba(0,255,157,.5)}100%{box-shadow:0 0 0 6px rgba(0,255,157,0)}}
+.remote-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.remote-dot.linked{background:var(--grn);animation:remotepulse 1.5s infinite}
+.remote-dot.connecting{background:var(--amb)}
+.remote-dot.error{background:var(--red)}
+.remote-dot.offline,.remote-dot.idle{background:var(--lo)}
+.remote-block{padding:10px 12px;border-top:1px solid var(--b0)}
+.remote-block-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--lo);margin-bottom:8px}
+.remote-status-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.remote-addr-row{display:flex;gap:6px}
+.remote-addr-input{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:6px 8px}
+.remote-reset{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--cyan);background:var(--cdim);border:1px solid var(--cyan);border-radius:5px;padding:5px 8px;cursor:pointer;white-space:nowrap}
+.remote-note{font-size:9px;color:var(--lo);margin-top:8px;line-height:1.5}
 `;
 
 function TrendChart({ results }) {
@@ -513,13 +537,44 @@ export default function App(){
   const [testTarget,setTestTarget] = useState(DEFAULT_PRESETS[1].name);
   const testCancelRef = useRef(false);
 
+  // ── Hardware Remote (MQTT) — placeholder joystick+buttons hardware.
+  //    Auto-follows the rosbridge host by default (port 9001); becomes
+  //    independently editable the moment its field is touched, since the
+  //    remote can legitimately reach the Pi via a different address than
+  //    the browser does (e.g. local hotspot vs VPN). ─────────────────────
+  const [remoteIpLinked,setRemoteIpLinked] = useState(initialRemoteLinked());
+  const [remoteBrokerUrl,setRemoteBrokerUrlRaw] = useState(()=>initialRemoteUrl() || `ws://${hostOf(initialUrl())}:9001`);
+  const [remoteStatus,setRemoteStatus] = useState("idle");
+  const [remoteActive,setRemoteActive] = useState(false);
+  const [remoteActiveJoint,setRemoteActiveJoint] = useState(null);
+  const speedRef = useRef(initialSpeed());
+  const disRef = useRef(false);
+
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
   
   useEffect(()=>{estRef.current=estp;},[estp]);
+  useEffect(()=>{speedRef.current=speed;},[speed]);
   useEffect(()=>{ safeSet("armctrl_waypoints", JSON.stringify(waypoints)); },[waypoints]);
+
+  useEffect(()=>{
+    if(remoteIpLinked){
+      const derived = `ws://${hostOf(url)}:9001`;
+      setRemoteBrokerUrlRaw(derived);
+      safeSet("armctrl_remote_url", derived);
+    }
+  },[url, remoteIpLinked]);
+
+  const setRemoteBrokerUrl = useCallback(v=>{
+    const derived = `ws://${stripProto(v)}`;
+    setRemoteBrokerUrlRaw(derived);
+    safeSet("armctrl_remote_url", derived);
+    setRemoteIpLinked(false);
+    safeSet("armctrl_remote_linked","false");
+  },[]);
+  const resetRemoteToRobotIp = ()=>{ setRemoteIpLinked(true); safeSet("armctrl_remote_linked","true"); };
 
   const log=useCallback((msg,type="info")=>{
     const entry={msg,type,time:ts(),iso:new Date().toISOString(),joints:{...feedRef.current}};
@@ -782,6 +837,51 @@ export default function App(){
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
+  useEffect(()=>{ disRef.current=dis; },[dis]);
+
+  // ── Hardware Remote (MQTT) connection + input handling ──────────────────
+  const lastRemoteCmd = useRef(0);
+  const remoteActiveTimeout = useRef(null);
+  useEffect(() => {
+    setRemoteStatus("connecting");
+    const client = mqtt.connect(remoteBrokerUrl);
+    client.on("connect", () => {
+      setRemoteStatus("linked");
+      client.subscribe("remote/data");
+      log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
+    });
+    client.on("reconnect", () => setRemoteStatus("connecting"));
+    client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
+    client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
+    client.on("message", (topic, message) => {
+      // Gated behind the SAME conditions the on-screen controls respect —
+      // disconnected, e-stopped, or Teach Mode all block remote input too.
+      if (topic !== "remote/data" || estRef.current || disRef.current) return;
+      const now = Date.now();
+      if (now - lastRemoteCmd.current < 40) return; // ~20Hz cap matches remote's publish rate
+      lastRemoteCmd.current = now;
+      try {
+        const data = JSON.parse(message.toString());
+        const jogAmount = JOG_DEG[speedRef.current];
+        // Placeholder deadzone/mapping — expected to change with the hardware.
+        const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
+        let moved = null;
+        if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
+        if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
+        if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
+        if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
+        if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
+        if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
+        if (moved) {
+          setRemoteActive(true); setRemoteActiveJoint(moved);
+          clearTimeout(remoteActiveTimeout.current);
+          remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
+        }
+      } catch (e) { console.error("MQTT parsing error", e); }
+    });
+    return () => { clearTimeout(remoteActiveTimeout.current); client.end(true); };
+  }, [stepJ, remoteBrokerUrl, log]);
+
   // Foxglove URL Routing
   const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
   const fgTarget = `ws://${host}:8765`;
@@ -848,10 +948,11 @@ export default function App(){
                     {JOINTS.map(j=>{
                       const val=joints[j.id], fill=fillSt(val,j.min,j.max,j.color);
                       const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
+                      const isRemote = remoteActiveJoint===j.id;
                       return(
-                        <div className={`jrow ${isA?"at":isN?"near":""}`} key={j.id}>
+                        <div className={`jrow ${isA?"at":isN?"near":isRemote?"remote":""}`} key={j.id}>
                           <div className="jhdr">
-                            <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label} {isA&&<span className="lbdg at">LIMIT</span>}{!isA&&isN&&<span className="lbdg near">NEAR</span>}</div>
+                            <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label} {isA&&<span className="lbdg at">LIMIT</span>}{!isA&&isN&&<span className="lbdg near">NEAR</span>}{!isA&&!isN&&isRemote&&<span className="lbdg remote">REMOTE</span>}</div>
                             <div className={`jval ${isA?"at":isN?"near":""}`} style={isN||isA?{}:{color:j.color}}>{val.toFixed(1)}{j.unit}</div>
                           </div>
                           <div className="jrange">
@@ -951,6 +1052,8 @@ export default function App(){
                 <div className="tcell"><div className="tlbl">Pub Hz</div><div className="tval">{hz}</div></div>
                 <div className="tcell"><div className="tlbl">Max Err</div><div className={`tval ${maxErr>5?"warn":"ok"}`}>{maxErr.toFixed(1)}°</div></div>
                 <div className="tcell"><div className="tlbl">Limits</div><div className={`tval ${anyNear?"warn":"ok"}`}>{anyNear?"WARN":"OK"}</div></div>
+                <div className="tcell"><div className="tlbl">Remote Link</div><div className={`tval ${remoteStatus==="linked"?"ok":remoteStatus==="error"?"err":"warn"}`} style={{fontSize:11}}>{remoteStatus.toUpperCase()}</div></div>
+                <div className="tcell"><div className="tlbl">Active Input</div><div className="tval" style={{fontSize:11,color:remoteActive?"var(--grn)":"var(--cyan)"}}>{remoteActive?"REMOTE":"WEB UI"}</div></div>
               </div>
             </div>
 
@@ -1010,6 +1113,18 @@ export default function App(){
                 {diag.TRACKED.map(t=>(
                   <div className="topic-row" key={t}><span className="topic-name">{t}</span><span className="topic-hz">{diag.tlog[t].count} msgs</span></div>
                 ))}
+              </div>
+              <div className="remote-block">
+                <div className="remote-block-title">Remote Control Link</div>
+                <div className="remote-status-row">
+                  <div className={`remote-dot ${remoteStatus}`}/>
+                  <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>{remoteBrokerUrl}</span>
+                </div>
+                <div className="remote-addr-row">
+                  <input className="remote-addr-input" value={stripProto(remoteBrokerUrl)} onChange={e=>setRemoteBrokerUrl(e.target.value)} spellCheck={false}/>
+                  {!remoteIpLinked && <button className="remote-reset" onClick={resetRemoteToRobotIp}>Use ROS IP</button>}
+                </div>
+                <div className="remote-note">Auto-follows the rosbridge host by default (port 9001). Override only if the remote reaches the Pi via a different address than your browser does. Joystick/button mapping is placeholder hardware.</div>
               </div>
             </div>
 
