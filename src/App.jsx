@@ -78,7 +78,7 @@ const CSS = `
   --amb:#FFB800;--adim:rgba(255,184,0,.12);
   --purple:#C77DFF;--pdim:rgba(199,125,255,.12);
   --r:7px;--rl:11px;
-  --hdr:52px;--logbar:30px;
+  --hdr:52px;--botpanel:200px;
 }
 html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--hi);font-family:'Inter',sans-serif;font-size:12px;line-height:1.4}
 ::-webkit-scrollbar{width:5px;height:5px}
@@ -139,7 +139,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .hdr-spacer{flex:1;min-width:8px}
 
 /* ══════════════ BODY: holy-grail grid ══════════════ */
-.holygrail{display:grid;grid-template-columns:270px 1fr 270px;grid-template-rows:1fr var(--logbar);grid-template-areas:"left center right" "logbar logbar logbar";height:100%;overflow:hidden}
+.holygrail{display:grid;grid-template-columns:270px 1fr 270px;grid-template-rows:1fr var(--botpanel);grid-template-areas:"left center right" "bottom bottom bottom";height:100%;overflow:hidden}
 .spoke-l{grid-area:left;background:var(--panel);border-right:1px solid var(--b0);overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .spoke-r{grid-area:right;background:var(--panel);border-left:1px solid var(--b0);overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
 .hub{grid-area:center;display:grid;grid-template-rows:auto 1fr;overflow:hidden;background:#000}
@@ -258,13 +258,17 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .remote-reset{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--cyan);background:var(--cdim);border:1px solid var(--cyan);border-radius:5px;padding:5px 8px;cursor:pointer;white-space:nowrap}
 .remote-note{font-size:9px;color:var(--lo);margin-top:8px;line-height:1.5}
 
-.logbar{grid-area:logbar;background:var(--panel);border-top:1px solid var(--b0);overflow:hidden;display:flex;flex-direction:column}
-.logbar-row{display:flex;align-items:center;gap:8px;padding:0 12px;height:var(--logbar);flex-shrink:0;cursor:pointer}
-.logbar-latest{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.logbar-latest .lt{color:var(--lo);margin-right:6px}
+.panel-bot{grid-area:bottom;background:var(--panel);border-top:1px solid var(--b0);display:grid;grid-template-columns:340px 1fr;overflow:hidden}
+.panel-bot-jog{border-right:1px solid var(--b0);padding:10px 14px;display:flex;flex-direction:column;justify-content:center;gap:8px;overflow-y:auto}
+.panel-bot-jog-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lo);margin-bottom:2px}
+.jog-axes-row{display:flex;gap:12px}
+.jog-axis-col{flex:1;display:flex;flex-direction:column;gap:5px}
+.jog-axis-lbl{font-size:10px;color:var(--mid);font-weight:600;display:flex;align-items:center;gap:5px}
+.panel-bot-log{padding:8px 14px;display:flex;flex-direction:column;overflow:hidden}
+.panel-bot-log-hdr{display:flex;align-items:center;justify-content:space-between;flex-shrink:0;margin-bottom:6px}
+.panel-bot-log-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lo)}
+.panel-bot-log-list{flex:1;overflow-y:auto}
 .logbar-toggle{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);flex-shrink:0}
-.logbar-expand{border-top:1px solid var(--b0);max-height:220px;overflow-y:auto;padding:6px 12px;background:var(--bg)}
-.logbar-expand-hdr{display:flex;justify-content:flex-end;gap:6px;padding-bottom:6px}
 .clearbtn{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--mid);background:var(--card);padding:4px 8px;border-radius:5px;border:1px solid var(--b0);cursor:pointer}
 .lent{display:flex;gap:8px;padding:4px 0;border-top:1px solid var(--b0);align-items:baseline;font-family:'JetBrains Mono',monospace;font-size:10px}
 .lent:first-child{border-top:none}
@@ -396,7 +400,6 @@ function useDiagnostics(rosConnected, rosInstance){
 export default function App(){
   const [leftTab,setLeftTab] = useState("control");
   const [speedOpen,setSpeedOpen] = useState(false);
-  const [logOpen,setLogOpen] = useState(false);
   const [conn,setConn]   = useState("disconnected");
   const [estp,setEstp]   = useState(false);
   const [joints,setJ]    = useState(initJ());
@@ -782,7 +785,6 @@ export default function App(){
   const host = hostOf(url);
   const fgTarget = `ws://${host}:8765`;
   const fgUrl = `http://${host}/ui/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
-  const latestLog = logs[0];
 
   return(
     <>
@@ -848,21 +850,6 @@ export default function App(){
 
             {leftTab==="control" ? (
               <>
-                <div className="slbl">Cartesian Jog</div>
-                {[
-                  {axis:"X",label:"Base",     color:"#00D4FF",id:"joint_1",dir:["←","→"]},
-                  {axis:"Y",label:"Shoulder", color:"#00FF9D",id:"joint_2",dir:["↓","↑"]},
-                  {axis:"Z",label:"Elbow",    color:"#FFB800",id:"joint_3",dir:["←","→"]},
-                ].map(({axis,label,color,id,dir})=>(
-                  <div className="jax" key={axis}>
-                    <div className="axlbl"><div className="axdot" style={{background:color}}/>{axis} {label}</div>
-                    <div className="jog-row">
-                      <JBtn speed={speed} onClick={()=>stepJ(id,-JOG_DEG[speed])} disabled={dis}>{dir[0]} {axis}−</JBtn>
-                      <JBtn speed={speed} onClick={()=>stepJ(id,JOG_DEG[speed])} disabled={dis}>{dir[1]} {axis}+</JBtn>
-                    </div>
-                  </div>
-                ))}
-
                 <div className="slbl">Joint Controls</div>
                 {JOINTS.map(j=>{
                   const val=joints[j.id], fill=fillSt(val,j.min,j.max,j.color);
@@ -1023,23 +1010,39 @@ export default function App(){
             </Accordion>
           </aside>
 
-          <div className="logbar">
-            <div className="logbar-row" onClick={()=>setLogOpen(o=>!o)}>
-              <div style={{background: estp?"var(--red)":"var(--grn)", width:6, height:6, borderRadius:"50%", flexShrink:0}}/>
-              <div className="logbar-latest">
-                {latestLog ? <><span className="lt">{latestLog.time}</span>{latestLog.msg}</> : "System log — waiting for activity…"}
+          <div className="panel-bot">
+            <div className="panel-bot-jog">
+              <div className="panel-bot-jog-title">Cartesian Jog</div>
+              <div className="jog-axes-row">
+                {[
+                  {axis:"X",label:"Base",     color:"#00D4FF",id:"joint_1",dir:["←","→"]},
+                  {axis:"Y",label:"Shoulder", color:"#00FF9D",id:"joint_2",dir:["↓","↑"]},
+                  {axis:"Z",label:"Elbow",    color:"#FFB800",id:"joint_3",dir:["←","→"]},
+                ].map(({axis,label,color,id,dir})=>(
+                  <div className="jog-axis-col" key={axis}>
+                    <div className="jog-axis-lbl"><div className="axdot" style={{background:color}}/>{axis} {label}</div>
+                    <div className="jog-row">
+                      <JBtn speed={speed} onClick={()=>stepJ(id,-JOG_DEG[speed])} disabled={dis}>{dir[0]} {axis}−</JBtn>
+                      <JBtn speed={speed} onClick={()=>stepJ(id,JOG_DEG[speed])} disabled={dis}>{dir[1]} {axis}+</JBtn>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <span className="logbar-toggle">{logs.length} entries {logOpen?"▾":"▸"}</span>
             </div>
-            {logOpen && (
-              <div className="logbar-expand">
-                <div className="logbar-expand-hdr">
-                  <button className="clearbtn" onClick={exportSystemLogCSV}>Export Full History</button>
+
+            <div className="panel-bot-log">
+              <div className="panel-bot-log-hdr">
+                <span className="panel-bot-log-title">System Log — {logs.length} entries</span>
+                <div style={{display:"flex",gap:6}}>
+                  <button className="clearbtn" onClick={exportSystemLogCSV}>Export</button>
                   <button className="clearbtn" onClick={()=>setLogs([])}>Clear</button>
                 </div>
+              </div>
+              <div className="panel-bot-log-list">
+                {logs.length===0 && <div className="lent"><span className="ltm">{ts()}</span><span className="lmsg">Waiting for activity…</span></div>}
                 {logs.map((l,i)=><div className="lent" key={i}><span className="ltm">{l.time}</span><span className={`lmsg ${l.type}`}>{l.msg}</span></div>)}
               </div>
-            )}
+            </div>
           </div>
         </div>
       </div>
