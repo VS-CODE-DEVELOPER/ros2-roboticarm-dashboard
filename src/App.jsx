@@ -129,10 +129,6 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .hdr-url-input{background:transparent;border:none;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;outline:none;width:100%;min-width:0}
 .hdr-url-input:disabled{opacity:.6}
 
-.mode-pill{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
-.mode-pill.run{background:var(--cdim);color:var(--cyan)}
-.mode-pill.teach{background:var(--pdim);color:var(--purple)}
-
 .mode-toggle{padding:4px 10px;border-radius:14px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid);flex-shrink:0}
 .mode-toggle.sim{border-color:var(--amb);color:var(--amb);background:var(--adim)}
 .mode-toggle.demo{border-color:var(--purple);color:var(--purple);background:var(--pdim)}
@@ -186,11 +182,12 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .tgl.on .tgl-thumb{left:20px;background:#04160D}
 .tgl:disabled{opacity:.4;cursor:not-allowed}
 
-/* Joints */
+/* Joints & Remote Highlight */
 .jrow{padding:8px 12px;border-bottom:1px solid var(--b0);display:flex;flex-direction:column;justify-content:center;transition:background .15s}
 .jrow:last-child{border-bottom:none}
 .jrow.near{animation:fw 1.2s ease-in-out infinite;border-left:3px solid var(--amb)}
 .jrow.at{animation:fd .7s ease-in-out infinite;border-left:3px solid var(--red)}
+.jrow.remote{border-left:3px solid var(--grn)}
 .jhdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
 .jname{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600}
 .jdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
@@ -200,6 +197,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .lbdg{font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.1em;padding:1px 5px;border-radius:3px;text-transform:uppercase}
 .lbdg.near{background:var(--adim);color:var(--amb);border:1px solid var(--amb)}
 .lbdg.at{background:var(--rdim);color:var(--red);border:1px solid var(--red)}
+.lbdg.remote{background:var(--gdim);color:var(--grn);border:1px solid var(--grn)}
 .jrange{display:flex;align-items:center;gap:6px;margin-bottom:6px}
 .jmin,.jmax{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);width:26px}
 .jmax{text-align:right}
@@ -312,6 +310,21 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .topic-name{color:var(--cyan)}
 .topic-hz{color:var(--grn)}
 
+/* Remote Hardware Block in Bottom Panel */
+@keyframes remotepulse{0%{box-shadow:0 0 0 0 rgba(0,255,157,.5)}100%{box-shadow:0 0 0 6px rgba(0,255,157,0)}}
+.remote-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.remote-dot.linked{background:var(--grn);animation:remotepulse 1.5s infinite}
+.remote-dot.connecting{background:var(--amb)}
+.remote-dot.error{background:var(--red)}
+.remote-dot.offline,.remote-dot.idle{background:var(--lo)}
+.remote-block{padding:10px 12px;border-top:1px solid var(--b0)}
+.remote-block-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--lo);margin-bottom:8px}
+.remote-status-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.remote-addr-row{display:flex;gap:6px}
+.remote-addr-input{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:6px 8px}
+.remote-reset{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--cyan);background:var(--cdim);border:1px solid var(--cyan);border-radius:5px;padding:5px 8px;cursor:pointer;white-space:nowrap}
+.remote-note{font-size:9px;color:var(--lo);margin-top:8px;line-height:1.5}
+
 .rt-row{display:flex;align-items:center;gap:6px;padding:8px 12px;flex-shrink:0}
 .rt-select{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:5px}
 .rt-btn{padding:6px 12px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;cursor:pointer;border:1px solid var(--cyan);color:var(--cyan);background:var(--cdim)}
@@ -354,24 +367,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
   .body{grid-template-columns:280px 1fr 240px; grid-template-rows:1fr 200px;}
   .test-col{width:260px;}
 }
-
-/* ── Hardware Remote (MQTT) — status lives in Right Panel, config lives in
-     the Diagnostics column of the bottom panel. Nowhere else. ── */
-.jrow.remote{border-left:3px solid var(--grn)}
-.lbdg.remote{background:var(--gdim);color:var(--grn);border:1px solid var(--grn)}
-@keyframes remotepulse{0%{box-shadow:0 0 0 0 rgba(0,255,157,.5)}100%{box-shadow:0 0 0 6px rgba(0,255,157,0)}}
-.remote-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.remote-dot.linked{background:var(--grn);animation:remotepulse 1.5s infinite}
-.remote-dot.connecting{background:var(--amb)}
-.remote-dot.error{background:var(--red)}
-.remote-dot.offline,.remote-dot.idle{background:var(--lo)}
-.remote-block{padding:10px 12px;border-top:1px solid var(--b0)}
-.remote-block-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--lo);margin-bottom:8px}
-.remote-status-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.remote-addr-row{display:flex;gap:6px}
-.remote-addr-input{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:6px 8px}
-.remote-reset{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--cyan);background:var(--cdim);border:1px solid var(--cyan);border-radius:5px;padding:5px 8px;cursor:pointer;white-space:nowrap}
-.remote-note{font-size:9px;color:var(--lo);margin-top:8px;line-height:1.5}
 `;
 
 function TrendChart({ results }) {
@@ -520,7 +515,7 @@ export default function App(){
   const [hz,setHz]       = useState(0);
   const [confirmAction,setConfirmAction] = useState(null);
   
-  // New UI Tab State for the Left Panel
+  // Left Panel Tab State
   const [leftTab,setLeftTab] = useState("manual");
 
   const [mode,setModeRaw] = useState(initialMode());
@@ -537,11 +532,7 @@ export default function App(){
   const [testTarget,setTestTarget] = useState(DEFAULT_PRESETS[1].name);
   const testCancelRef = useRef(false);
 
-  // ── Hardware Remote (MQTT) — placeholder joystick+buttons hardware.
-  //    Auto-follows the rosbridge host by default (port 9001); becomes
-  //    independently editable the moment its field is touched, since the
-  //    remote can legitimately reach the Pi via a different address than
-  //    the browser does (e.g. local hotspot vs VPN). ─────────────────────
+  // Hardware Remote (MQTT) State
   const [remoteIpLinked,setRemoteIpLinked] = useState(initialRemoteLinked());
   const [remoteBrokerUrl,setRemoteBrokerUrlRaw] = useState(()=>initialRemoteUrl() || `ws://${hostOf(initialUrl())}:9001`);
   const [remoteStatus,setRemoteStatus] = useState("idle");
@@ -832,16 +823,14 @@ export default function App(){
   const diag = useDiagnostics(conn==="connected" && mode==="ros", rosRef.current);
   const maxErr=Math.max(...JOINTS.map(j=>Math.abs((joints[j.id]||0)-(feed[j.id]||0))));
   const anyNear=JOINTS.some(j=>nearLim(joints[j.id],j));
-  const dis=estp||conn!=="connected"||!armPower;
+  const dis=estp||conn!=connected"||!armPower;
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
   useEffect(()=>{ disRef.current=dis; },[dis]);
 
-  // ── Hardware Remote (MQTT) connection + input handling ──────────────────
-  const lastRemoteCmd = useRef(0);
-  const remoteActiveTimeout = useRef(null);
+  // MQTT Connection Logic
   useEffect(() => {
     setRemoteStatus("connecting");
     const client = mqtt.connect(remoteBrokerUrl);
@@ -854,16 +843,13 @@ export default function App(){
     client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
     client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
     client.on("message", (topic, message) => {
-      // Gated behind the SAME conditions the on-screen controls respect —
-      // disconnected, e-stopped, or Teach Mode all block remote input too.
       if (topic !== "remote/data" || estRef.current || disRef.current) return;
       const now = Date.now();
-      if (now - lastRemoteCmd.current < 40) return; // ~20Hz cap matches remote's publish rate
+      if (now - lastRemoteCmd.current < 40) return; 
       lastRemoteCmd.current = now;
       try {
         const data = JSON.parse(message.toString());
         const jogAmount = JOG_DEG[speedRef.current];
-        // Placeholder deadzone/mapping — expected to change with the hardware.
         const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
         let moved = null;
         if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
@@ -886,6 +872,7 @@ export default function App(){
   const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
   const fgTarget = `ws://${host}:8765`;
   const fgUrl = `http://${host}/ui/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
+  const activeInputLabel = remoteActive ? `REMOTE (${remoteActiveJoint})` : "WEB UI";
 
   return(
     <>
@@ -907,7 +894,7 @@ export default function App(){
           <div className="hdr-center">
             <div className="hdr-url-wrap">
               <span className="hdr-url-label">ws://</span>
-              <input className="hdr-url-input" value={url.replace(/^ws:\/\//,"")} onChange={e=>setUrl("ws://"+e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
+              <input className="hdr-url-input" value={stripProto(url)} onChange={e=>setUrl(e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
             </div>
             <button className={`mode-toggle ${mode==="mock"?"sim":""}`} onClick={()=>setMode(mode==="ros"?"mock":"ros")} disabled={conn!=="disconnected"}>{mode==="mock"?"SIM":"LIVE"}</button>
             <button className={`mode-toggle ${demoMode?"demo":""}`} onClick={()=>setDemoMode(d=>!d)}>{demoMode?"DEMO ON":"DEMO OFF"}</button>
@@ -1053,7 +1040,7 @@ export default function App(){
                 <div className="tcell"><div className="tlbl">Max Err</div><div className={`tval ${maxErr>5?"warn":"ok"}`}>{maxErr.toFixed(1)}°</div></div>
                 <div className="tcell"><div className="tlbl">Limits</div><div className={`tval ${anyNear?"warn":"ok"}`}>{anyNear?"WARN":"OK"}</div></div>
                 <div className="tcell"><div className="tlbl">Remote Link</div><div className={`tval ${remoteStatus==="linked"?"ok":remoteStatus==="error"?"err":"warn"}`} style={{fontSize:11}}>{remoteStatus.toUpperCase()}</div></div>
-                <div className="tcell"><div className="tlbl">Active Input</div><div className="tval" style={{fontSize:11,color:remoteActive?"var(--grn)":"var(--cyan)"}}>{remoteActive?"REMOTE":"WEB UI"}</div></div>
+                <div className="tcell"><div className="tlbl">Active Input</div><div className="tval" style={{fontSize:11,color:remoteActive?"var(--grn)":"var(--cyan)"}}>{activeInputLabel}</div></div>
               </div>
             </div>
 
@@ -1115,16 +1102,12 @@ export default function App(){
                 ))}
               </div>
               <div className="remote-block">
-                <div className="remote-block-title">Remote Control Link</div>
-                <div className="remote-status-row">
-                  <div className={`remote-dot ${remoteStatus}`}/>
-                  <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--lo)"}}>{remoteBrokerUrl}</span>
-                </div>
+                <div className="remote-block-title">Hardware Remote Configuration</div>
                 <div className="remote-addr-row">
                   <input className="remote-addr-input" value={stripProto(remoteBrokerUrl)} onChange={e=>setRemoteBrokerUrl(e.target.value)} spellCheck={false}/>
                   {!remoteIpLinked && <button className="remote-reset" onClick={resetRemoteToRobotIp}>Use ROS IP</button>}
                 </div>
-                <div className="remote-note">Auto-follows the rosbridge host by default (port 9001). Override only if the remote reaches the Pi via a different address than your browser does. Joystick/button mapping is placeholder hardware.</div>
+                <div className="remote-note">Auto-follows ROS IP. Edit only if remote reaches Pi differently.</div>
               </div>
             </div>
 
@@ -1160,7 +1143,7 @@ export default function App(){
           <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.0 · {ts()}</span>
         </div>
 
       </div>
