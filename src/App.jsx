@@ -823,7 +823,7 @@ export default function App(){
   const diag = useDiagnostics(conn==="connected" && mode==="ros", rosRef.current);
   const maxErr=Math.max(...JOINTS.map(j=>Math.abs((joints[j.id]||0)-(feed[j.id]||0))));
   const anyNear=JOINTS.some(j=>nearLim(joints[j.id],j));
-  const dis=estp||conn!=connected"||!armPower;
+  const dis=estp||conn!=="connected"||!armPower;
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
