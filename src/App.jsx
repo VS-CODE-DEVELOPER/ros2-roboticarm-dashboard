@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import mqtt from "mqtt/dist/mqtt.min"; // Using the browser bundle
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
@@ -60,7 +61,10 @@ const initialWaypoints = () => {
   } catch { return []; }
 };
 
+const initialRemoteLinked = () => safeGet("armctrl_remote_linked","true") !== "false";
+const initialRemoteUrl = () => safeGet("armctrl_remote_url", null);
 const stripProto = (s) => String(s).replace(/^wss?:\/\//i,"").replace(/^https?:\/\//i,"");
+const hostOf = (wsUrl) => stripProto(wsUrl).split(":")[0].split("/")[0];
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
 const CSS = `
@@ -92,7 +96,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
   grid-template-areas:
     "left center right"
     "left bottom right";
-  background:var(--b0); /* Creates instant 1px borders between panels */
+  background:var(--b0); 
   gap:1px;
   overflow:hidden;
   width:100%;
@@ -178,11 +182,12 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .tgl.on .tgl-thumb{left:20px;background:#04160D}
 .tgl:disabled{opacity:.4;cursor:not-allowed}
 
-/* Joints */
+/* Joints & Remote Highlight */
 .jrow{padding:8px 12px;border-bottom:1px solid var(--b0);display:flex;flex-direction:column;justify-content:center;transition:background .15s}
 .jrow:last-child{border-bottom:none}
 .jrow.near{animation:fw 1.2s ease-in-out infinite;border-left:3px solid var(--amb)}
 .jrow.at{animation:fd .7s ease-in-out infinite;border-left:3px solid var(--red)}
+.jrow.remote{border-left:3px solid var(--grn)}
 .jhdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
 .jname{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600}
 .jdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
@@ -192,6 +197,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .lbdg{font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.1em;padding:1px 5px;border-radius:3px;text-transform:uppercase}
 .lbdg.near{background:var(--adim);color:var(--amb);border:1px solid var(--amb)}
 .lbdg.at{background:var(--rdim);color:var(--red);border:1px solid var(--red)}
+.lbdg.remote{background:var(--gdim);color:var(--grn);border:1px solid var(--grn)}
 .jrange{display:flex;align-items:center;gap:6px;margin-bottom:6px}
 .jmin,.jmax{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);width:26px}
 .jmax{text-align:right}
@@ -257,11 +263,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .pbtn.add:hover:not(:disabled){border-color:var(--grn);color:var(--grn);background:var(--gdim)}
 .pbtn-del{position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;line-height:16px;text-align:center;border:1px solid var(--bg);cursor:pointer}
 
-.act-row{display:flex;gap:4px;padding:5px 12px 10px}
-.abtn{flex:1;padding:6px;background:transparent;border:1px solid var(--b1);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer;transition:all .15s;text-align:center;font-family:'JetBrains Mono',monospace}
-.abtn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
-.abtn:disabled{opacity:.3;cursor:not-allowed}
-
 /* ── Center (Foxglove) ── */
 .fg-bar{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:rgba(13,17,23,0.85);backdrop-filter:blur(5px);border-bottom:1px solid var(--b0);z-index:10}
 .fg-tag{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--purple);display:flex;align-items:center;gap:8px}
@@ -309,12 +310,20 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .topic-name{color:var(--cyan)}
 .topic-hz{color:var(--grn)}
 
-/* ROS2 Nodes / Topics discovered list (bottom diagnostics column) */
-.nodes-block{padding:0;border-top:1px solid var(--b0)}
-.nodes-block-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--lo);padding:8px 12px 4px}
-.node-row{display:flex;align-items:center;gap:5px;padding:3px 12px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.node-row .arrow{color:var(--cyan);flex-shrink:0}
-.node-empty{padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo)}
+/* Remote Hardware Block in Bottom Panel */
+@keyframes remotepulse{0%{box-shadow:0 0 0 0 rgba(0,255,157,.5)}100%{box-shadow:0 0 0 6px rgba(0,255,157,0)}}
+.remote-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.remote-dot.linked{background:var(--grn);animation:remotepulse 1.5s infinite}
+.remote-dot.connecting{background:var(--amb)}
+.remote-dot.error{background:var(--red)}
+.remote-dot.offline,.remote-dot.idle{background:var(--lo)}
+.remote-block{padding:10px 12px;border-top:1px solid var(--b0)}
+.remote-block-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--lo);margin-bottom:8px}
+.remote-status-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.remote-addr-row{display:flex;gap:6px}
+.remote-addr-input{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:6px 8px}
+.remote-reset{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--cyan);background:var(--cdim);border:1px solid var(--cyan);border-radius:5px;padding:5px 8px;cursor:pointer;white-space:nowrap}
+.remote-note{font-size:9px;color:var(--lo);margin-top:8px;line-height:1.5}
 
 .rt-row{display:flex;align-items:center;gap:6px;padding:8px 12px;flex-shrink:0}
 .rt-select{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:5px}
@@ -494,8 +503,8 @@ function useDiagnostics(rosConnected, rosInstance){
   return { tlog, info, TRACKED };
 }
 
-// ─── App ─────────────────────────────────────────────────────────────────────
-export default function App(){
+// ─── App Component ───────────────────────────────────────────────────────────
+function App(){
   const [conn,setConn]   = useState("disconnected");
   const [estp,setEstp]   = useState(false);
   const [joints,setJ]    = useState(initJ());
@@ -523,13 +532,40 @@ export default function App(){
   const [testTarget,setTestTarget] = useState(DEFAULT_PRESETS[1].name);
   const testCancelRef = useRef(false);
 
+  // Hardware Remote (MQTT) State
+  const [remoteIpLinked,setRemoteIpLinked] = useState(initialRemoteLinked());
+  const [remoteBrokerUrl,setRemoteBrokerUrlRaw] = useState(()=>initialRemoteUrl() || `ws://${hostOf(initialUrl())}:9001`);
+  const [remoteStatus,setRemoteStatus] = useState("idle");
+  const [remoteActive,setRemoteActive] = useState(false);
+  const [remoteActiveJoint,setRemoteActiveJoint] = useState(null);
+  const speedRef = useRef(initialSpeed());
+  const disRef = useRef(false);
+
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
   
   useEffect(()=>{estRef.current=estp;},[estp]);
+  useEffect(()=>{speedRef.current=speed;},[speed]);
   useEffect(()=>{ safeSet("armctrl_waypoints", JSON.stringify(waypoints)); },[waypoints]);
+
+  useEffect(()=>{
+    if(remoteIpLinked){
+      const derived = `ws://${hostOf(url)}:9001`;
+      setRemoteBrokerUrlRaw(derived);
+      safeSet("armctrl_remote_url", derived);
+    }
+  },[url, remoteIpLinked]);
+
+  const setRemoteBrokerUrl = useCallback(v=>{
+    const derived = `ws://${stripProto(v)}`;
+    setRemoteBrokerUrlRaw(derived);
+    safeSet("armctrl_remote_url", derived);
+    setRemoteIpLinked(false);
+    safeSet("armctrl_remote_linked","false");
+  },[]);
+  const resetRemoteToRobotIp = ()=>{ setRemoteIpLinked(true); safeSet("armctrl_remote_linked","true"); };
 
   const log=useCallback((msg,type="info")=>{
     const entry={msg,type,time:ts(),iso:new Date().toISOString(),joints:{...feedRef.current}};
@@ -792,10 +828,64 @@ export default function App(){
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
-  // Foxglove URL Routing
-  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+  useEffect(()=>{ disRef.current=dis; },[dis]);
+
+  // MQTT Connection Logic wrapped in try/catch to stop fatal crashes
+  useEffect(() => {
+    setRemoteStatus("connecting");
+    let client;
+    
+    try {
+      client = mqtt.connect(remoteBrokerUrl);
+    } catch (err) {
+      console.error("MQTT Initialization Error:", err);
+      setRemoteStatus("error");
+      log(`Remote link error: ${err?.message ?? err}`, "error");
+      return; // Exit early to prevent taking down the UI
+    }
+
+    client.on("connect", () => {
+      setRemoteStatus("linked");
+      client.subscribe("remote/data");
+      log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
+    });
+    client.on("reconnect", () => setRemoteStatus("connecting"));
+    client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
+    client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
+    client.on("message", (topic, message) => {
+      if (topic !== "remote/data" || estRef.current || disRef.current) return;
+      const now = Date.now();
+      if (now - lastRemoteCmd.current < 40) return; 
+      lastRemoteCmd.current = now;
+      try {
+        const data = JSON.parse(message.toString());
+        const jogAmount = JOG_DEG[speedRef.current];
+        const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
+        let moved = null;
+        if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
+        if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
+        if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
+        if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
+        if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
+        if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
+        if (moved) {
+          setRemoteActive(true); setRemoteActiveJoint(moved);
+          clearTimeout(remoteActiveTimeout.current);
+          remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
+        }
+      } catch (e) { console.error("MQTT parsing error", e); }
+    });
+    return () => { 
+      clearTimeout(remoteActiveTimeout.current); 
+      if (client) client.end(true); 
+    };
+  }, [stepJ, remoteBrokerUrl, log]);
+
+  // Foxglove URL Routing (Dynamic Host Fix)
+  const host = hostOf(url);
   const fgTarget = `ws://${host}:8765`;
   const fgUrl = `http://${host}/ui/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
+  const activeInputLabel = remoteActive ? `REMOTE (${remoteActiveJoint})` : "WEB UI";
 
   return(
     <>
@@ -858,10 +948,11 @@ export default function App(){
                     {JOINTS.map(j=>{
                       const val=joints[j.id], fill=fillSt(val,j.min,j.max,j.color);
                       const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
+                      const isRemote = remoteActiveJoint===j.id;
                       return(
-                        <div className={`jrow ${isA?"at":isN?"near":""}`} key={j.id}>
+                        <div className={`jrow ${isA?"at":isN?"near":isRemote?"remote":""}`} key={j.id}>
                           <div className="jhdr">
-                            <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label} {isA&&<span className="lbdg at">LIMIT</span>}{!isA&&isN&&<span className="lbdg near">NEAR</span>}</div>
+                            <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label} {isA&&<span className="lbdg at">LIMIT</span>}{!isA&&isN&&<span className="lbdg near">NEAR</span>}{!isA&&!isN&&isRemote&&<span className="lbdg remote">REMOTE</span>}</div>
                             <div className={`jval ${isA?"at":isN?"near":""}`} style={isN||isA?{}:{color:j.color}}>{val.toFixed(1)}{j.unit}</div>
                           </div>
                           <div className="jrange">
@@ -881,10 +972,6 @@ export default function App(){
                         </div>
                       );
                     })}
-                  </div>
-                  <div className="act-row">
-                    <button className="abtn" onClick={requestReset} disabled={dis}>Reset All</button>
-                    <button className="abtn" onClick={()=>publish()} disabled={dis}>Publish</button>
                   </div>
                   <div className="plbl">Cartesian Jog</div>
                   <div style={{padding:"6px 0 10px"}}>
@@ -965,8 +1052,8 @@ export default function App(){
                 <div className="tcell"><div className="tlbl">Pub Hz</div><div className="tval">{hz}</div></div>
                 <div className="tcell"><div className="tlbl">Max Err</div><div className={`tval ${maxErr>5?"warn":"ok"}`}>{maxErr.toFixed(1)}°</div></div>
                 <div className="tcell"><div className="tlbl">Limits</div><div className={`tval ${anyNear?"warn":"ok"}`}>{anyNear?"WARN":"OK"}</div></div>
-                <div className="tcell"><div className="tlbl">Speed</div><div className={`tval ${speed===2?"warn":"ok"}`} style={{fontSize:13}}>{SPEEDS[speed]}</div></div>
-                <div className="tcell"><div className="tlbl">Emergency</div><div className={`tval ${estp?"err":"ok"}`} style={{fontSize:13}}>{estp?"ACTIVE":"CLEAR"}</div></div>
+                <div className="tcell"><div className="tlbl">Remote Link</div><div className={`tval ${remoteStatus==="linked"?"ok":remoteStatus==="error"?"err":"warn"}`} style={{fontSize:11}}>{remoteStatus.toUpperCase()}</div></div>
+                <div className="tcell"><div className="tlbl">Active Input</div><div className="tval" style={{fontSize:11,color:remoteActive?"var(--grn)":"var(--cyan)"}}>{activeInputLabel}</div></div>
               </div>
             </div>
 
@@ -1026,15 +1113,14 @@ export default function App(){
                 {diag.TRACKED.map(t=>(
                   <div className="topic-row" key={t}><span className="topic-name">{t}</span><span className="topic-hz">{diag.tlog[t].count} msgs</span></div>
                 ))}
-                <div className="nodes-block">
-                  <div className="nodes-block-title">ROS2 Nodes · {diag.info.nodes.length} active</div>
-                  {diag.info.nodes.length===0
-                    ? <div className="node-empty">{mode==="mock"?"Simulation mode — no ROS nodes":"No nodes yet — connect first"}</div>
-                    : diag.info.nodes.map(n=>(
-                      <div className="node-row" key={n} title={n}><span className="arrow">▸</span>{n}</div>
-                    ))
-                  }
+              </div>
+              <div className="remote-block">
+                <div className="remote-block-title">Hardware Remote Configuration</div>
+                <div className="remote-addr-row">
+                  <input className="remote-addr-input" value={stripProto(remoteBrokerUrl)} onChange={e=>setRemoteBrokerUrl(e.target.value)} spellCheck={false}/>
+                  {!remoteIpLinked && <button className="remote-reset" onClick={resetRemoteToRobotIp}>Use ROS IP</button>}
                 </div>
+                <div className="remote-note">Auto-follows ROS IP. Edit only if remote reaches Pi differently.</div>
               </div>
             </div>
 
@@ -1070,10 +1156,50 @@ export default function App(){
           <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.1 · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.0 · {ts()}</span>
         </div>
 
       </div>
     </>
+  );
+}
+
+// ─── Global Error Boundary ───────────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: "40px", color: "#FF3B3B", background: "#080C10", height: "100vh", fontFamily: "monospace" }}>
+          <h2 style={{ fontSize: "24px", marginBottom: "20px" }}>FATAL ERROR INTERCEPTED</h2>
+          <p style={{ color: "#8B949E", marginBottom: "10px" }}>The dashboard encountered a critical crash, but the Error Boundary prevented a blank screen. See the stack trace below:</p>
+          <pre style={{ background: "#111820", padding: "20px", borderRadius: "8px", whiteSpace: "pre-wrap", border: "1px solid #FF3B3B" }}>
+            {this.state.error && this.state.error.toString()}
+          </pre>
+          <button 
+            onClick={() => window.location.reload()} 
+            style={{ padding: "12px 24px", background: "#FF3B3B", color: "#FFF", border: "none", borderRadius: "5px", cursor: "pointer", marginTop: "20px", fontWeight: "bold" }}
+          >
+            Reload Dashboard
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Export the wrapped App
+export default function SafeApp() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   );
 }
