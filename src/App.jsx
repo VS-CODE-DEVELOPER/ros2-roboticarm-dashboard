@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import mqtt from "mqtt/dist/mqtt.min";
+import { useState, useEffect, useRef, useCallback, Component } from "react";
+import mqtt from "mqtt";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
@@ -504,7 +504,36 @@ function useDiagnostics(rosConnected, rosInstance){
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
+// ─── Error Boundary — the permanent fix for "renders then goes blank".
+//     Without this, ANY uncaught error anywhere in the tree (a bad mqtt
+//     bundle, a broken import, a bug in a future feature) unmounts the
+//     entire app silently. This catches it and shows what actually broke. ──
+class DashboardErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("Dashboard crashed:", error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{position:"fixed",inset:0,background:"#080C10",color:"#E6EDF3",fontFamily:"JetBrains Mono, monospace",padding:24,overflow:"auto"}}>
+          <div style={{color:"#FF3B3B",fontWeight:700,fontSize:14,marginBottom:12}}>⚠ DASHBOARD CRASHED</div>
+          <div style={{fontSize:12,color:"#8B949E",marginBottom:16,lineHeight:1.6}}>
+            An uncaught error stopped the app instead of just failing quietly. Most likely causes: the <b>mqtt</b> package needs Node polyfills to run in the browser (Vite doesn't add these automatically), or a mixed-content block (this page is HTTPS but is trying to reach ws:// or http:// targets — that only works when the dashboard itself is served over plain HTTP, e.g. from the Pi).
+          </div>
+          <pre style={{fontSize:11,color:"#FFB800",whiteSpace:"pre-wrap",background:"#111820",padding:12,borderRadius:8,border:"1px solid #1E2D3D"}}>{String(this.state.error?.stack || this.state.error)}</pre>
+          <button onClick={()=>this.setState({error:null})} style={{marginTop:16,padding:"8px 16px",background:"#0D1117",border:"1px solid #253545",color:"#E6EDF3",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:11}}>Try Again</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App(){
+  return <DashboardErrorBoundary><AppInner/></DashboardErrorBoundary>;
+}
+
+function AppInner(){
   const [conn,setConn]   = useState("disconnected");
   const [estp,setEstp]   = useState(false);
   const [joints,setJ]    = useState(initJ());
@@ -830,46 +859,60 @@ export default function App(){
 
   useEffect(()=>{ disRef.current=dis; },[dis]);
 
-  // MQTT Connection Logic
+  // MQTT Connection Logic — wrapped defensively: a broken mqtt bundle,
+  // bad broker address, or connection failure must never crash the whole
+  // dashboard. Without this, React unmounts the entire tree on any
+  // uncaught error thrown inside an effect (exactly the "flickers then
+  // goes blank" symptom).
   useEffect(() => {
-    setRemoteStatus("connecting");
-    const client = mqtt.connect(remoteBrokerUrl);
-    client.on("connect", () => {
-      setRemoteStatus("linked");
-      client.subscribe("remote/data");
-      log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
-    });
-    client.on("reconnect", () => setRemoteStatus("connecting"));
-    client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
-    client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
-    client.on("message", (topic, message) => {
-      if (topic !== "remote/data" || estRef.current || disRef.current) return;
-      const now = Date.now();
-      if (now - lastRemoteCmd.current < 40) return; 
-      lastRemoteCmd.current = now;
-      try {
-        const data = JSON.parse(message.toString());
-        const jogAmount = JOG_DEG[speedRef.current];
-        const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
-        let moved = null;
-        if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
-        if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
-        if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
-        if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
-        if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
-        if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
-        if (moved) {
-          setRemoteActive(true); setRemoteActiveJoint(moved);
-          clearTimeout(remoteActiveTimeout.current);
-          remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
-        }
-      } catch (e) { console.error("MQTT parsing error", e); }
-    });
-    return () => { clearTimeout(remoteActiveTimeout.current); client.end(true); };
+    let client = null;
+    try {
+      setRemoteStatus("connecting");
+      client = mqtt.connect(remoteBrokerUrl);
+      client.on("connect", () => {
+        setRemoteStatus("linked");
+        client.subscribe("remote/data");
+        log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
+      });
+      client.on("reconnect", () => setRemoteStatus("connecting"));
+      client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
+      client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
+      client.on("message", (topic, message) => {
+        if (topic !== "remote/data" || estRef.current || disRef.current) return;
+        const now = Date.now();
+        if (now - lastRemoteCmd.current < 40) return;
+        lastRemoteCmd.current = now;
+        try {
+          const data = JSON.parse(message.toString());
+          const jogAmount = JOG_DEG[speedRef.current];
+          const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
+          let moved = null;
+          if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
+          if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
+          if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
+          if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
+          if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
+          if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
+          if (moved) {
+            setRemoteActive(true); setRemoteActiveJoint(moved);
+            clearTimeout(remoteActiveTimeout.current);
+            remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
+          }
+        } catch (e) { console.error("MQTT parsing error", e); }
+      });
+    } catch (e) {
+      setRemoteStatus("error");
+      log(`Remote link failed to initialize: ${e?.message ?? e}`,"error");
+      console.error("mqtt.connect() threw — check that the mqtt package is bundled correctly for the browser", e);
+    }
+    return () => {
+      clearTimeout(remoteActiveTimeout.current);
+      try { client && client.end(true); } catch (e) { /* already dead, ignore */ }
+    };
   }, [stepJ, remoteBrokerUrl, log]);
 
   // Foxglove URL Routing
-  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+  const host = hostOf(url); // derived from the rosbridge field, not window.location — correct regardless of where this dashboard itself is hosted
   const fgTarget = `ws://${host}:8765`;
   const fgUrl = `http://${host}/ui/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
   const activeInputLabel = remoteActive ? `REMOTE (${remoteActiveJoint})` : "WEB UI";
