@@ -1089,19 +1089,26 @@ export default function App(){
             {/* Diagnostics Column */}
             <div className="bot-col diag-col" style={{borderLeft:"1px solid var(--b0)"}}>
               <div className="plbl" style={{borderBottom:"none"}}>ROS2 Diagnostics</div>
-              <div className="dkpi-grid">
-                <div className="dkpi"><div className="dkpi-lbl">Bridge</div><div className={`dkpi-val ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"ONLINE":"OFFLINE"}</div></div>
-                <div className="dkpi"><div className="dkpi-lbl">Nodes</div><div className="dkpi-val ok">{diag.info.nodes.length||"–"}</div></div>
-                {diag.TRACKED.map(t=>(
-                  <div className="dkpi" key={t}><div className="dkpi-lbl" style={{textTransform:"none"}}>{t}</div><div className={`dkpi-val ${diag.tlog[t].hz>0?"ok":"warn"}`}>{diag.tlog[t].hz} Hz</div></div>
-                ))}
+
+              {/* System Status + Topics scroll together, bounded — Remote
+                  Config below is never pushed off no matter how much
+                  content is here (more nodes/topics later, etc). */}
+              <div style={{maxHeight:110, overflowY:"auto", flexShrink:0}}>
+                <div className="dkpi-grid">
+                  <div className="dkpi"><div className="dkpi-lbl">Bridge</div><div className={`dkpi-val ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"ONLINE":"OFFLINE"}</div></div>
+                  <div className="dkpi"><div className="dkpi-lbl">Nodes</div><div className="dkpi-val ok">{diag.info.nodes.length||"–"}</div></div>
+                  {diag.TRACKED.map(t=>(
+                    <div className="dkpi" key={t}><div className="dkpi-lbl" style={{textTransform:"none"}}>{t}</div><div className={`dkpi-val ${diag.tlog[t].hz>0?"ok":"warn"}`}>{diag.tlog[t].hz} Hz</div></div>
+                  ))}
+                </div>
+                <div style={{borderTop:"1px solid var(--b0)"}}>
+                  {diag.TRACKED.map(t=>(
+                    <div className="topic-row" key={t}><span className="topic-name">{t}</span><span className="topic-hz">{diag.tlog[t].count} msgs</span></div>
+                  ))}
+                </div>
               </div>
-              <div style={{flex:1,overflowY:"auto",borderTop:"1px solid var(--b0)"}}>
-                {diag.TRACKED.map(t=>(
-                  <div className="topic-row" key={t}><span className="topic-name">{t}</span><span className="topic-hz">{diag.tlog[t].count} msgs</span></div>
-                ))}
-              </div>
-              <div className="remote-block">
+
+              <div className="remote-block" style={{flexShrink:0, borderTop:"1px solid var(--b0)"}}>
                 <div className="remote-block-title">Hardware Remote Configuration</div>
                 <div className="remote-addr-row">
                   <input className="remote-addr-input" value={stripProto(remoteBrokerUrl)} onChange={e=>setRemoteBrokerUrl(e.target.value)} spellCheck={false}/>
