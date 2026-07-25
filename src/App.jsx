@@ -795,7 +795,7 @@ export default function App(){
   // Foxglove URL Routing
   const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
   const fgTarget = `ws://${host}:8765`;
-  const fgUrl = `http://${host}/ui/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
+  const fgUrl = `http://${host}:8080/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
 
   return(
     <>
@@ -817,7 +817,7 @@ export default function App(){
           <div className="hdr-center">
             <div className="hdr-url-wrap">
               <span className="hdr-url-label">ws://</span>
-              <input className="hdr-url-input" value={stripProto(url)} onChange={e=>setUrl(e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
+              <input className="hdr-url-input" value={stripProto(url)} onChange={e=>setUrl("ws://"+e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
             </div>
             <button className={`mode-toggle ${mode==="mock"?"sim":""}`} onClick={()=>setMode(mode==="ros"?"mock":"ros")} disabled={conn!=="disconnected"}>{mode==="mock"?"SIM":"LIVE"}</button>
             <button className={`mode-toggle ${demoMode?"demo":""}`} onClick={()=>setDemoMode(d=>!d)}>{demoMode?"DEMO ON":"DEMO OFF"}</button>
