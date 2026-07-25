@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import mqtt from "mqtt"; // <--- ADDED MQTT IMPORT
+import mqtt from "mqtt";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
@@ -29,9 +29,12 @@ const fillSt   = (val,min,max,col) => {
   const p=v=>((v-min)/(max-min))*100, z=p(clamp(0,min,max)), vp=p(val);
   return {left:`${Math.min(z,vp)}%`,width:`${Math.abs(z-vp)}%`,background:col};
 };
-// Delta-bar thresholds for Feedback vs CMD — proves closed-loop tracking at a glance
 const deltaColor = (err) => err < 1 ? "var(--grn)" : err < 3 ? "var(--amb)" : "var(--red)";
 const deltaPct   = (err) => Math.min(100, (err/10)*100);
+// Strips any accidentally-pasted protocol so the address field always ends
+// up correct, instead of just warning the user not to type ws://http://.
+const stripProto = (s) => s.replace(/^wss?:\/\//i,"").replace(/^https?:\/\//i,"");
+const hostOf = (wsUrl) => stripProto(wsUrl).split(":")[0].split("/")[0];
 
 // ─── localStorage — wrapped safely ────────────────────────────────────────
 const safeGet = (key, fallback) => {
@@ -61,6 +64,7 @@ const initialWaypoints = () => {
     return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
 };
+const initialRemoteUrl = () => safeGet("armctrl_remote_url", "ws://192.168.137.78:9001");
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
 const CSS = `
@@ -90,6 +94,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 @keyframes fw{0%,100%{border-color:var(--amb);background:var(--adim)}50%{border-color:#F80;background:rgba(255,120,0,.2)}}
 @keyframes fd{0%,100%{border-color:var(--red);background:var(--rdim)}50%{border-color:#F00;background:rgba(255,0,0,.25)}}
+@keyframes remotepulse{0%{box-shadow:0 0 0 0 rgba(0,255,157,.5)}100%{box-shadow:0 0 0 6px rgba(0,255,157,0)}}
 
 .hdr-center{display:flex;align-items:center;gap:8px;flex:1;justify-content:center;min-width:0}
 .hdr-r{display:flex;align-items:center;gap:8px;flex-shrink:0}
@@ -102,6 +107,12 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .mode-pill{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
 .mode-pill.run{background:var(--cdim);color:var(--cyan)}
 .mode-pill.teach{background:var(--pdim);color:var(--purple)}
+
+.remote-pill{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--b0);color:var(--lo);background:transparent;flex-shrink:0}
+.remote-pill.linked{border-color:var(--grn);color:var(--grn);background:var(--gdim)}
+.remote-pill.connecting{border-color:var(--amb);color:var(--amb);background:var(--adim)}
+.remote-pill.error{border-color:var(--red);color:var(--red);background:var(--rdim)}
+.remote-pill.active{animation:remotepulse .3s ease-out}
 
 .mode-toggle{padding:4px 10px;border-radius:14px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid);flex-shrink:0}
 .mode-toggle.sim{border-color:var(--amb);color:var(--amb);background:var(--adim)}
@@ -157,8 +168,8 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .abtn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .abtn:disabled{opacity:.3;cursor:not-allowed}
 
-.pwr-row{display:flex;align-items:center;justify-content:space-between;padding:6px 10px 8px}
-.pwr-label{display:flex;flex-direction:column;gap:1px}
+.pwr-row{display:flex;align-items:center;justify-content:space-between;padding:6px 10px 8px;gap:8px}
+.pwr-label{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
 .pwr-title{font-size:10px;font-weight:600;color:var(--hi)}
 .pwr-sub{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo)}
 .tgl{width:38px;height:20px;border-radius:10px;background:var(--b1);position:relative;cursor:pointer;border:none;flex-shrink:0}
@@ -166,6 +177,10 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .tgl-thumb{width:16px;height:16px;border-radius:50%;background:var(--hi);position:absolute;top:2px;left:2px;transition:left .12s}
 .tgl.on .tgl-thumb{left:20px;background:#04160D}
 .tgl:disabled{opacity:.4;cursor:not-allowed}
+
+.remote-addr-input{background:var(--panel);border:1px solid var(--b0);border-radius:4px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:8px;padding:3px 5px;width:100%;outline:none;margin-top:3px}
+.remote-addr-input:focus{border-color:var(--cyan)}
+.remote-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:2px}
 
 .vizwrap{flex:1;overflow:hidden;padding:4px 10px 8px;display:flex;flex-direction:column;min-height:0}
 .vizleg{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-top:4px;flex-shrink:0}
@@ -192,6 +207,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .jrow:hover{background:var(--hover)}
 .jrow.near{animation:fw 1.2s ease-in-out infinite;border-left:3px solid var(--amb)}
 .jrow.at{animation:fd .7s ease-in-out infinite;border-left:3px solid var(--red)}
+.jrow.remote{border-left:3px solid var(--grn)}
 
 .jhdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
 .jname{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:500}
@@ -202,6 +218,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
 .lbdg{font-family:'JetBrains Mono',monospace;font-size:7px;font-weight:700;letter-spacing:.1em;padding:1px 4px;border-radius:3px;text-transform:uppercase}
 .lbdg.near{background:var(--adim);color:var(--amb);border:1px solid var(--amb)}
 .lbdg.at{background:var(--rdim);color:var(--red);border:1px solid var(--red)}
+.lbdg.remote{background:var(--gdim);color:var(--grn);border:1px solid var(--grn)}
 
 .jrange{display:flex;align-items:center;gap:5px;margin-bottom:3px}
 .jmin,.jmax{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo);width:24px}
@@ -300,7 +317,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .topic-cnt{color:var(--lo)}
 .topic-scroll{flex:1;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--b0) transparent;min-height:0}
 
-/* Repeatability Test — consolidated: controls + live results + summary all in ONE panel */
 .rt-row{display:flex;align-items:center;gap:6px;padding:5px 10px;flex-shrink:0}
 .rt-taglabel{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo);flex-shrink:0}
 .rt-select{flex:1;background:var(--panel);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:9px;padding:3px 5px}
@@ -321,7 +337,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .rt-csv:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .rt-csv:disabled{opacity:.3;cursor:not-allowed}
 
-/* ROS2 Nodes — Foxglove button locked at TOP, never scrolls, never gets pushed off */
 .nodes-sec{display:flex;flex-direction:column;min-height:0;overflow:hidden}
 .fg-link{margin:6px 10px;padding:8px;background:var(--purple);border:1px solid var(--purple);border-radius:6px;color:#04160D;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:800;letter-spacing:.06em;text-align:center;cursor:pointer;text-transform:uppercase;flex-shrink:0;box-shadow:0 0 10px rgba(199,125,255,.35)}
 .fg-link:hover{background:#D896FF}
@@ -380,7 +395,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .fgmodal-frame{flex:1;border:none;width:100%;background:#000}
 .fgmodal-note{padding:5px 14px;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);border-top:1px solid var(--b0);flex-shrink:0}
 
-/* ── Tablet / touch responsiveness ── */
 @media (max-width:1024px){
   html,body,#root{overflow-y:auto;height:auto}
   .shell{height:auto;min-height:100vh;overflow:visible;grid-template-rows:auto auto auto}
@@ -407,9 +421,7 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 }
 `;
 
-// ─── Trend chart — hand-built SVG, no charting library. A <path> and a
-//     handful of <circle>s cost nothing to render, even on a tablet CPU
-//     that also has to keep up with jog commands and WebSocket parsing. ───
+// ─── Trend chart ───────────────────────────────────────────────────────────
 function TrendChart({ results }) {
   if (!results.length) return null;
   const W=280, H=100, padL=16, padR=8, padT=8, padB=14;
@@ -421,13 +433,10 @@ function TrendChart({ results }) {
   const pathD=results.map((r,i)=>`${i===0?"M":"L"} ${x(i).toFixed(1)} ${y(r.err).toFixed(1)}`).join(" ");
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"100%"}} preserveAspectRatio="none">
-      {/* 1° / 3° threshold guides */}
       <line x1={padL} y1={y(1)} x2={W-padR} y2={y(1)} stroke="#00FF9D" strokeWidth=".5" strokeDasharray="2 2" opacity=".35"/>
       <line x1={padL} y1={y(3)} x2={W-padR} y2={y(3)} stroke="#FFB800" strokeWidth=".5" strokeDasharray="2 2" opacity=".35"/>
-      {/* axes */}
       <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#253545" strokeWidth=".6"/>
       <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#253545" strokeWidth=".6"/>
-      {/* trend line */}
       <path d={pathD} fill="none" stroke="#00D4FF" strokeWidth="1.4"/>
       {results.map((r,i)=>(
         <circle key={r.run} cx={x(i)} cy={y(r.err)} r="2.4" fill={dot(r.err)} stroke="#0D1117" strokeWidth=".8"/>
@@ -439,7 +448,6 @@ function TrendChart({ results }) {
   );
 }
 
-// ─── Confirm dialog ─────────────────────────────────────────────────────────
 function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onCancel }) {
   if (!open) return null;
   return (
@@ -456,28 +464,31 @@ function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onC
   );
 }
 
-// ─── Foxglove overlay — additive only ────────────────────────────────────────
+// Foxglove now connects on 8765 (foxglove_bridge), NOT rosbridge's 9090 —
+// the host is derived from the main rosbridge address so both stay in sync
+// with whatever network the browser is actually reaching the Pi on.
 function FoxgloveModal({ open, url, onClose }) {
   if (!open) return null;
-  const fgUrl = `https://app.foxglove.dev/?ds=rosbridge-websocket&ds.url=${encodeURIComponent(url)}`;
+  const host = hostOf(url);
+  const fgTarget = `ws://${host}:8765`;
+  const fgUrl = `https://app.foxglove.dev/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
   return (
     <div className="fgmodal-bg" onClick={onClose}>
       <div className="fgmodal" onClick={e=>e.stopPropagation()}>
         <div className="fgmodal-hdr">
-          <span className="fgmodal-title">FOXGLOVE 3D VIEW</span>
+          <span className="fgmodal-title">FOXGLOVE 3D VIEW — {fgTarget}</span>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             <a href={fgUrl} target="_blank" rel="noopener noreferrer" className="fgmodal-tab">Open in New Tab ↗</a>
             <button className="fgmodal-close" onClick={onClose}>✕</button>
           </div>
         </div>
         <iframe src={fgUrl} title="Foxglove" className="fgmodal-frame" />
-        <div className="fgmodal-note">If this stays blank, Foxglove is blocking iframe embedding — use "Open in New Tab" instead.</div>
+        <div className="fgmodal-note">Connects on port 8765 (foxglove_bridge) — separate from rosbridge's 9090. If blank: the bridge may not be launched yet (ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765), or embedding is blocked — use "Open in New Tab".</div>
       </div>
     </div>
   );
 }
 
-// ─── Long-press hook ──────────────────────────────────────────────────────────
 function useLongPress(cb, speed) {
   const ref=useRef(cb), iv=useRef(null), to=useRef(null);
   useEffect(()=>{ref.current=cb;},[cb]);
@@ -500,7 +511,6 @@ function JBtn({children,onClick,disabled,speed,cls=""}){
   return <button className={`jbtn ${cls}`} disabled={disabled} {...(disabled?{}:h)}>{children}</button>;
 }
 
-// ─── Arm 2D Viz ───────────────────────────────────────────────────────────────
 function ArmViz({joints,style}){
   const cx=100,cy=100,R=d=>(d*Math.PI)/180;
   const sa=R(joints.joint_2-90),ea=R(joints.joint_2+joints.joint_3-90);
@@ -546,7 +556,6 @@ function ArmViz({joints,style}){
   );
 }
 
-// ─── Diagnostics telemetry hook ───────────────────────────────────────────────
 function useDiagnostics(rosConnected, rosInstance){
   const TRACKED=["/joint_states","/cmd_vel"];
   const [tlog,setTlog]=useState(Object.fromEntries(TRACKED.map(t=>[t,{count:0,hz:0,last:"-"}])));
@@ -597,11 +606,9 @@ export default function App(){
   const [rightTab,setRightTab] = useState("jog");
   const [showFg,setShowFg] = useState(false);
 
-  // ── Transport mode: 'ros' (real rosbridge) or 'mock' (Local Simulation Mode) ──
   const [mode,setModeRaw] = useState(initialMode());
   const setMode = useCallback(v=>{ setModeRaw(v); safeSet("armctrl_mode", v); }, []);
 
-  // Demo Mode — bypasses confirmation dialogs for a live presentation.
   const [demoMode,setDemoMode] = useState(false);
 
   const [presets,setPresets] = useState(DEFAULT_PRESETS);
@@ -616,24 +623,39 @@ export default function App(){
   const [testTarget,setTestTarget] = useState(DEFAULT_PRESETS[1].name);
   const testCancelRef = useRef(false);
 
+  // ── Remote (MQTT) — placeholder joystick+buttons hardware, expected to
+  //    change; the plumbing around it (status, gating, config) is the part
+  //    meant to stay stable across hardware revisions. ────────────────────
+  const [remoteStatus,setRemoteStatus] = useState("idle"); // idle|connecting|linked|offline|error
+  const [remoteActive,setRemoteActive] = useState(false);
+  const [remoteBrokerUrl,setRemoteBrokerUrlRaw] = useState(initialRemoteUrl());
+  const setRemoteBrokerUrl = useCallback(v=>{ setRemoteBrokerUrlRaw(v); safeSet("armctrl_remote_url", v); },[]);
+  const remoteActiveJointRef = useRef(null);
+  const [remoteActiveJoint,setRemoteActiveJoint] = useState(null);
+
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
-  const logHistoryRef=useRef([]); 
+  const logHistoryRef=useRef([]);
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
-  
-  useEffect(()=>{estRef.current=estp;},[estp]);
+  const speedRef=useRef(speed);
+  const disRef=useRef(false);
 
+  useEffect(()=>{estRef.current=estp;},[estp]);
+  useEffect(()=>{speedRef.current=speed;},[speed]);
   useEffect(()=>{ safeSet("armctrl_waypoints", JSON.stringify(waypoints)); },[waypoints]);
 
   const log=useCallback((msg,type="info")=>{
     const entry={msg,type,time:ts(),iso:new Date().toISOString(),joints:{...feedRef.current}};
     logHistoryRef.current.push(entry);
-    if(logHistoryRef.current.length>5000) logHistoryRef.current.shift(); 
+    if(logHistoryRef.current.length>5000) logHistoryRef.current.shift();
     setLogs(p=>[entry,...p.slice(0,99)]);
   },[]);
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
 
-  const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
+  // URL fields sanitize any pasted protocol prefix — the ws:// stays in the
+  // label, the input only ever holds host:port, so "do not type ws://" is
+  // enforced by the code instead of relying on the operator to remember.
+  const setUrl = useCallback(v=>{ setUrlRaw("ws://"+stripProto(v)); safeSet("armctrl_url", "ws://"+stripProto(v)); },[]);
   const setSp  = useCallback(v=>{ setSpRaw(v); safeSet("armctrl_speed", String(v)); },[]);
 
   const dispatchCommand = useCallback((type, payload) => {
@@ -652,7 +674,6 @@ export default function App(){
       }
       return;
     }
-    // ros mode
     const ROSLIB = window.ROSLIB;
     if (type === "JOINT_COMMAND") {
       if (!pubRef.current || !ROSLIB) return;
@@ -688,7 +709,7 @@ export default function App(){
     log(reconnectAttemptRef.current>0 ? `Auto-reconnecting (attempt ${reconnectAttemptRef.current}/8) → ${url}` : `Connecting → ${url}`,"warn");
     const ros=new ROSLIB.Ros({url}); rosRef.current=ros;
     ros.on("connection",()=>{
-      reconnectAttemptRef.current=0; // reset backoff on success
+      reconnectAttemptRef.current=0;
       setConn("connected"); log("ROS2 bridge connected","success");
       pubRef.current=new ROSLIB.Topic({ros,name:"/joint_commands",messageType:"sensor_msgs/JointState"});
       subRef.current=new ROSLIB.Topic({ros,name:"/joint_states",  messageType:"sensor_msgs/JointState"});
@@ -922,57 +943,66 @@ export default function App(){
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
-  // ─── HARDWARE REMOTE CONTROL (MQTT) ───────────────────────────────────────
+  // dis is only known after everything above — sync it into a ref so the
+  // remote-input handler (defined below, but firing async later) always
+  // reads the current gating state rather than a stale closed-over value.
+  useEffect(()=>{ disRef.current=dis; },[dis]);
+
+  // ─── HARDWARE REMOTE CONTROL (MQTT) ───────────────────────────────────
   const lastRemoteCmd = useRef(0);
+  const remoteActiveTimeout = useRef(null);
 
   useEffect(() => {
-    // Connect to Mosquitto via WebSockets (Port 9001)
-    const client = mqtt.connect("ws://192.168.137.78:9001");
+    setRemoteStatus("connecting");
+    const client = mqtt.connect(remoteBrokerUrl);
 
     client.on("connect", () => {
-      console.log("React Connected to Hardware Remote Broker!");
+      setRemoteStatus("linked");
       client.subscribe("remote/data");
-      log("Hardware Remote Linked", "success");
+      log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
     });
+    client.on("reconnect", () => setRemoteStatus("connecting"));
+    client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
+    client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
 
     client.on("message", (topic, message) => {
-      if (topic === "remote/data" && !estRef.current) {
-        // Throttle updates to ~20Hz max so React doesn't lag
-        const now = Date.now();
-        if (now - lastRemoteCmd.current < 40) return;
-        lastRemoteCmd.current = now;
+      // Gated behind the SAME conditions the on-screen controls respect —
+      // disconnected, e-stopped, or Teach Mode all block remote input too,
+      // so the physical remote can never fight Teach Mode or move a
+      // de-energized/unreachable arm.
+      if (topic !== "remote/data" || estRef.current || disRef.current) return;
+      const now = Date.now();
+      if (now - lastRemoteCmd.current < 40) return; // ~20Hz cap matches the remote's publish rate
+      lastRemoteCmd.current = now;
 
-        try {
-          const data = JSON.parse(message.toString());
-          const currentSpeed = speed; // Uses your selected Speed (Slow/Normal/Fast)
-          const jogAmount = JOG_DEG[currentSpeed];
+      try {
+        const data = JSON.parse(message.toString());
+        const jogAmount = JOG_DEG[speedRef.current];
+        // Placeholder deadzone/mapping — expected to change with the hardware.
+        const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
+        let moved = null;
 
-          // 1. Deadzone Logic (Assuming 13-bit ADC: 0 to 4095, Center is ~2048)
-          const DEADZONE_LOW = 1700;
-          const DEADZONE_HIGH = 2400;
+        if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
+        if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
+        if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
+        if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
+        if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
+        if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
 
-          // 2. Map Joystick X to Joint 1 (Base)
-          if (data.joyX < DEADZONE_LOW)  stepJ("joint_1", -jogAmount);
-          if (data.joyX > DEADZONE_HIGH) stepJ("joint_1", jogAmount);
-
-          // 3. Map Joystick Y to Joint 2 (Shoulder)
-          if (data.joyY < DEADZONE_LOW)  stepJ("joint_2", -jogAmount);
-          if (data.joyY > DEADZONE_HIGH) stepJ("joint_2", jogAmount);
-
-          // 4. Map Buttons to Actions (e.g., Open/Close Gripper)
-          // Since INPUT_PULLUP is 0 when pressed:
-          if (data.btn1 === 0) stepJ("joint_6", 5);  // Close Gripper
-          if (data.btn2 === 0) stepJ("joint_6", -5); // Open Gripper
-
-        } catch (e) {
-          console.error("MQTT Parsing Error", e);
+        if (moved) {
+          setRemoteActive(true);
+          remoteActiveJointRef.current = moved;
+          setRemoteActiveJoint(moved);
+          clearTimeout(remoteActiveTimeout.current);
+          remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
         }
+      } catch (e) {
+        console.error("MQTT parsing error", e);
       }
     });
 
-    return () => client.end();
-  }, [stepJ, speed, log]);
-  // ────────────────────────────────────────────────────────────────────────
+    return () => { clearTimeout(remoteActiveTimeout.current); client.end(true); };
+  }, [stepJ, remoteBrokerUrl, log]);
 
   return(
     <>
@@ -999,7 +1029,7 @@ export default function App(){
           <div className="hdr-center">
             <div className="hdr-url-wrap">
               <span className="hdr-url-label">ws://</span>
-              <input className="hdr-url-input" value={url.replace(/^ws:\/\//,"")} onChange={e=>setUrl("ws://"+e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
+              <input className="hdr-url-input" value={url.replace(/^ws:\/\//,"")} onChange={e=>setUrl(e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false} placeholder="host:9090"/>
             </div>
             <button
               className={`mode-toggle ${mode==="mock"?"sim":""}`}
@@ -1021,6 +1051,12 @@ export default function App(){
           </div>
 
           <div className="hdr-r">
+            <span className={`remote-pill ${remoteStatus} ${remoteActive?"active":""}`} title={remoteBrokerUrl}>
+              {remoteStatus==="linked" ? (remoteActive?`REMOTE · ${remoteActiveJoint}`:"REMOTE LINKED")
+                : remoteStatus==="connecting" ? "REMOTE…"
+                : remoteStatus==="error" ? "REMOTE ERROR"
+                : "REMOTE OFFLINE"}
+            </span>
             <span className={`mode-pill ${armPower?"run":"teach"}`}>{armPower?"Web Control":"Teach Mode"}</span>
             <div className={`badge ${conn}`}>
               <div className="bdg-dot"/>
@@ -1062,6 +1098,28 @@ export default function App(){
               </button>
             </div>
 
+            <div className="slbl">Remote Link</div>
+            <div className="pwr-row">
+              <div className="pwr-label">
+                <span className="pwr-title">
+                  {remoteStatus==="linked"?"Linked":remoteStatus==="connecting"?"Connecting":remoteStatus==="error"?"Error":"Offline"}
+                </span>
+                <input
+                  className="remote-addr-input"
+                  value={remoteBrokerUrl.replace(/^ws:\/\//,"")}
+                  onChange={e=>setRemoteBrokerUrl("ws://"+stripProto(e.target.value))}
+                  spellCheck={false}
+                  placeholder="host:9001"
+                  title="Mosquitto WebSocket address for the physical remote"
+                />
+              </div>
+              <div className="remote-dot" style={{background:
+                remoteStatus==="linked"?"var(--grn)":
+                remoteStatus==="error"?"var(--red)":
+                remoteStatus==="connecting"?"var(--amb)":"var(--lo)"
+              }}/>
+            </div>
+
             <div className="slbl">Saved Positions</div>
             <div className="pgrid">
               {presets.map(p=>(
@@ -1099,14 +1157,16 @@ export default function App(){
                   {JOINTS.map(j=>{
                     const val=joints[j.id], fill=fillSt(val,j.min,j.max,j.color);
                     const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
+                    const isRemote = remoteActiveJoint===j.id;
                     return(
-                      <div className={`jrow ${isA?"at":isN?"near":""}`} key={j.id}>
+                      <div className={`jrow ${isA?"at":isN?"near":isRemote?"remote":""}`} key={j.id}>
                         <div className="jhdr">
                           <div className="jname">
                             <div className="jdot" style={{background:j.color}}/>
                             {j.label}
                             {isA&&<span className="lbdg at">AT LIMIT</span>}
                             {!isA&&isN&&<span className="lbdg near">NEAR</span>}
+                            {!isA&&!isN&&isRemote&&<span className="lbdg remote">REMOTE</span>}
                           </div>
                           <div className={`jval ${isA?"at":isN?"near":""}`} style={isN||isA?{}:{color:j.color}}>
                             {val.toFixed(1)}{j.unit}
@@ -1228,6 +1288,7 @@ export default function App(){
                     <div className="dkpi"><div className="dkpi-lbl">ROS Nodes</div><div className="dkpi-val ok">{diag.info.nodes.length||"–"}</div></div>
                     <div className="dkpi"><div className="dkpi-lbl">/joint_states</div><div className={`dkpi-val ${diag.tlog["/joint_states"].hz>0?"ok":"warn"}`}>{diag.tlog["/joint_states"].hz} Hz</div></div>
                     <div className="dkpi"><div className="dkpi-lbl">Pub Hz</div><div className="dkpi-val ok">{hz}</div></div>
+                    <div className="dkpi"><div className="dkpi-lbl">Remote</div><div className={`dkpi-val ${remoteStatus==="linked"?"ok":remoteStatus==="error"?"err":"warn"}`}>{remoteStatus.toUpperCase()}</div></div>
                   </div>
                 </div>
 
@@ -1257,7 +1318,7 @@ export default function App(){
                   </div>
                 </div>
 
-                {/* ③ Repeatability Test — consolidated: controls, live results, and summary in ONE panel */}
+                {/* ③ Repeatability Test */}
                 <div className="diag-sec">
                   <div className="diag-sec-hdr">
                     <span className="diag-sec-title">Repeatability Test</span>
@@ -1287,7 +1348,7 @@ export default function App(){
                   )}
                 </div>
 
-                {/* ④ ROS Nodes — Foxglove locked at TOP, node list scrolls below it */}
+                {/* ④ ROS Nodes — Foxglove locked at TOP */}
                 <div className="diag-sec nodes-sec" style={{minWidth:190}}>
                   <div className="diag-sec-hdr">
                     <span className="diag-sec-title">ROS2 Nodes</span>
@@ -1357,7 +1418,7 @@ export default function App(){
           <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v3.2 · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL v3.3 · {ts()}</span>
         </div>
 
       </div>
