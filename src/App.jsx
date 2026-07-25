@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import mqtt from "mqtt";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
@@ -30,8 +29,7 @@ const fillSt   = (val,min,max,col) => {
   return {left:`${Math.min(z,vp)}%`,width:`${Math.abs(z-vp)}%`,background:col};
 };
 const deltaColor = (err) => err < 1 ? "var(--grn)" : err < 3 ? "var(--amb)" : "var(--red)";
-const stripProto = (s) => String(s).replace(/^wss?:\/\//i,"").replace(/^https?:\/\//i,"");
-const hostOf = (wsUrl) => stripProto(wsUrl).split(":")[0].split("/")[0];
+const deltaPct   = (err) => Math.min(100, (err/10)*100);
 
 // ─── localStorage — wrapped safely ────────────────────────────────────────
 const safeGet = (key, fallback) => {
@@ -61,8 +59,6 @@ const initialWaypoints = () => {
     return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
 };
-const initialRemoteLinked = () => safeGet("armctrl_remote_linked","true") !== "false";
-const initialRemoteUrl = () => safeGet("armctrl_remote_url", null);
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
 const CSS = `
@@ -78,200 +74,219 @@ const CSS = `
   --amb:#FFB800;--adim:rgba(255,184,0,.12);
   --purple:#C77DFF;--pdim:rgba(199,125,255,.12);
   --r:7px;--rl:11px;
-  --hdr:52px;--botpanel:200px;
+  --hdr:48px;--strip:24px;
 }
 html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--hi);font-family:'Inter',sans-serif;font-size:12px;line-height:1.4}
-::-webkit-scrollbar{width:5px;height:5px}
-::-webkit-scrollbar-thumb{background:var(--b1);border-radius:3px}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
-@keyframes remotepulse{0%{box-shadow:0 0 0 0 rgba(0,255,157,.5)}100%{box-shadow:0 0 0 6px rgba(0,255,157,0)}}
-@keyframes fd{0%,100%{border-color:var(--red);background:var(--rdim)}50%{border-color:#F00;background:rgba(255,0,0,.25)}}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-thumb{background:var(--b1);border-radius:2px}
 
-.shell{display:grid;grid-template-rows:var(--hdr) 1fr;width:100vw;height:100vh;overflow:hidden}
+/* ── COCKPIT LAYOUT ARCHITECTURE ── */
+.shell{display:grid;grid-template-rows:var(--hdr) 1fr var(--strip);width:100vw;height:100vh;overflow:hidden}
 
-/* ══════════════ TOP NAV BAR — fixed ══════════════ */
-.hdr{display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--b0);z-index:200;flex-wrap:wrap;min-height:var(--hdr);position:relative}
-.brand{display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;letter-spacing:.05em;color:var(--cyan);flex-shrink:0}
+.body{
+  display:grid;
+  grid-template-columns:320px 1fr 280px;
+  grid-template-rows:1fr 240px;
+  grid-template-areas:
+    "left center right"
+    "left bottom right";
+  background:var(--b0); /* Creates instant 1px borders between panels */
+  gap:1px;
+  overflow:hidden;
+  width:100%;
+  height:100%;
+}
+
+.panel-left   { grid-area:left;   background:var(--panel); display:flex; flex-direction:column; overflow:hidden; }
+.panel-center { grid-area:center; background:#000;         display:flex; flex-direction:column; overflow:hidden; position:relative; }
+.panel-right  { grid-area:right;  background:var(--panel); display:flex; flex-direction:column; overflow-y:auto; }
+.panel-bottom { grid-area:bottom; background:var(--b0);    display:flex; gap:1px; overflow:hidden; }
+
+.bot-col { background:var(--panel); display:flex; flex-direction:column; overflow:hidden; }
+.log-col { flex:1; }
+.diag-col { width:260px; }
+.test-col { width:300px; }
+
+/* ── Header ── */
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--b0);z-index:100;overflow:hidden}
+.brand{display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;letter-spacing:.05em;color:var(--cyan);flex-shrink:0}
 .bdot{width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 7px var(--cyan);animation:blink 2s infinite}
 .bdot.off{background:var(--lo);box-shadow:none;animation:none}
-.hdr-url-wrap{display:flex;align-items:center;gap:5px;background:var(--bg);border:1px solid var(--b0);border-radius:var(--r);padding:4px 9px;min-width:0;flex:0 1 240px}
-.hdr-url-label{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo);letter-spacing:.1em;text-transform:uppercase}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes fw{0%,100%{border-color:var(--amb);background:var(--adim)}50%{border-color:#F80;background:rgba(255,120,0,.2)}}
+@keyframes fd{0%,100%{border-color:var(--red);background:var(--rdim)}50%{border-color:#F00;background:rgba(255,0,0,.25)}}
+
+.hdr-center{display:flex;align-items:center;gap:8px;flex:1;justify-content:center;min-width:0}
+.hdr-r{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.hdr-url-wrap{display:flex;align-items:center;gap:6px;background:var(--bg);border:1px solid var(--b0);border-radius:var(--r);padding:3px 8px;min-width:0;flex:0 1 320px}
+.hdr-url-label{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
 .hdr-url-input{background:transparent;border:none;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;outline:none;width:100%;min-width:0}
 .hdr-url-input:disabled{opacity:.6}
-.mode-toggle{padding:5px 10px;border-radius:14px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid);flex-shrink:0}
+
+.mode-pill{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.mode-pill.run{background:var(--cdim);color:var(--cyan)}
+.mode-pill.teach{background:var(--pdim);color:var(--purple)}
+
+.mode-toggle{padding:4px 10px;border-radius:14px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid);flex-shrink:0}
 .mode-toggle.sim{border-color:var(--amb);color:var(--amb);background:var(--adim)}
 .mode-toggle.demo{border-color:var(--purple);color:var(--purple);background:var(--pdim)}
 .mode-toggle:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .mode-toggle:disabled{opacity:.4;cursor:not-allowed}
-.badge{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:9px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.06em;text-transform:uppercase;border:1px solid transparent;flex-shrink:0}
+
+.badge{display:flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.07em;text-transform:uppercase;border:1px solid transparent;transition:all .3s;white-space:nowrap}
 .badge.connected{color:var(--grn);border-color:var(--grn);background:var(--gdim)}
 .badge.disconnected{color:var(--mid);border-color:var(--b0)}
 .badge.connecting{color:var(--amb);border-color:var(--amb);background:var(--adim)}
 .bdg-dot{width:5px;height:5px;border-radius:50%;background:currentColor}
 .badge.connected .bdg-dot{animation:blink 1.5s infinite}
-.hbtn{padding:5px 12px;border-radius:var(--r);font-size:9px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.05em;cursor:pointer;border:1.5px solid transparent;flex-shrink:0}
+
+.hbtn{padding:4px 12px;border-radius:var(--r);font-size:10px;font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.05em;cursor:pointer;transition:all .15s;border:1.5px solid transparent;white-space:nowrap;flex-shrink:0}
+.hbtn:active{transform:scale(.97)}
 .hbtn:disabled{opacity:.35;cursor:not-allowed}
 .hbtn.conn{background:var(--gdim);color:var(--grn);border-color:var(--grn)}
+.hbtn.conn:hover:not(:disabled){background:var(--grn);color:var(--bg)}
 .hbtn.disc{background:transparent;color:var(--mid);border-color:var(--b1)}
-.hbtn.estop{background:var(--rdim);border-color:var(--red);color:var(--red);padding:6px 16px;font-weight:800}
+.hbtn.disc:hover:not(:disabled){border-color:var(--red);color:var(--red)}
+.hbtn.estop{background:var(--rdim);border-color:var(--red);color:var(--red);padding:4px 16px}
 .hbtn.estop:hover:not(:disabled){background:var(--red);color:#fff}
-.hbtn.resume{background:var(--gdim);border-color:var(--grn);color:var(--grn);font-weight:800}
+.hbtn.resume{background:var(--gdim);border-color:var(--grn);color:var(--grn)}
+.hbtn.resume:hover:not(:disabled){background:var(--grn);color:var(--bg)}
 
-.speed-wrap{position:relative;flex-shrink:0}
-.speed-btn{padding:5px 10px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.05em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid);display:flex;align-items:center;gap:5px}
-.speed-btn:hover{border-color:var(--cyan);color:var(--cyan)}
-.speed-pop{position:absolute;top:110%;left:0;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);padding:6px;display:flex;gap:5px;z-index:300;box-shadow:0 8px 20px rgba(0,0,0,.4)}
-.spd{padding:8px 10px;background:var(--panel);border:1px solid var(--b0);border-radius:6px;color:var(--mid);font-size:10px;font-weight:700;cursor:pointer;text-align:center;display:flex;flex-direction:column;align-items:center;gap:2px;white-space:nowrap}
+/* ── Panel Shared ── */
+.slbl{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--lo);padding:10px 12px 6px;flex-shrink:0;background:rgba(255,255,255,.01)}
+.plbl{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--hi);padding:6px 12px;border-bottom:1px solid var(--b0);background:rgba(255,255,255,.01);flex-shrink:0;display:flex;justify-content:space-between;align-items:center}
+
+/* ── Left Tabs ── */
+.left-tabs{display:flex;border-bottom:1px solid var(--b0);flex-shrink:0}
+.ltab{flex:1;padding:10px 0;background:transparent;border:none;color:var(--lo);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s}
+.ltab.on{color:var(--cyan);border-bottom-color:var(--cyan);background:var(--cdim)}
+.ltab.teach.on{color:var(--purple);border-bottom-color:var(--purple);background:var(--pdim)}
+.left-content{flex:1;overflow-y:auto;display:flex;flex-direction:column}
+
+/* ── Controls ── */
+.spd-row{display:flex;padding:5px 12px;gap:4px}
+.spd{flex:1;padding:6px 2px;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s;display:flex;flex-direction:column;align-items:center;gap:2px}
 .spd.on{background:var(--cdim);border-color:var(--cyan);color:var(--cyan)}
-.spd-rate{font-family:'JetBrains Mono',monospace;font-size:7px;color:var(--lo)}
+.spd-rate{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo)}
 .spd.on .spd-rate{color:var(--cyan)}
 
-.pwr-hdr{display:flex;align-items:center;gap:7px;padding:4px 10px;border-radius:var(--r);border:1px solid var(--b0);background:var(--bg);flex-shrink:0}
-.pwr-hdr-label{display:flex;flex-direction:column;gap:0}
-.pwr-hdr-title{font-size:9px;font-weight:700;color:var(--hi)}
-.pwr-hdr-sub{font-family:'JetBrains Mono',monospace;font-size:7px;color:var(--lo)}
-.tgl{width:34px;height:18px;border-radius:9px;background:var(--b1);position:relative;cursor:pointer;border:none;flex-shrink:0}
+.pwr-row{display:flex;align-items:center;justify-content:space-between;padding:5px 12px}
+.pwr-label{display:flex;flex-direction:column;gap:1px}
+.pwr-title{font-size:10px;font-weight:600;color:var(--hi)}
+.pwr-sub{font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--lo)}
+.tgl{width:38px;height:20px;border-radius:10px;background:var(--b1);position:relative;cursor:pointer;border:none;flex-shrink:0}
 .tgl.on{background:var(--grn)}
-.tgl-thumb{width:14px;height:14px;border-radius:50%;background:var(--hi);position:absolute;top:2px;left:2px;transition:left .12s}
-.tgl.on .tgl-thumb{left:18px;background:#04160D}
+.tgl-thumb{width:16px;height:16px;border-radius:50%;background:var(--hi);position:absolute;top:2px;left:2px;transition:left .12s}
+.tgl.on .tgl-thumb{left:20px;background:#04160D}
 .tgl:disabled{opacity:.4;cursor:not-allowed}
 
-.hdr-spacer{flex:1;min-width:8px}
-
-/* ══════════════ BODY: holy-grail grid ══════════════ */
-.holygrail{display:grid;grid-template-columns:270px 1fr 270px;grid-template-rows:1fr var(--botpanel);grid-template-areas:"left center right" "bottom bottom bottom";height:100%;overflow:hidden}
-.spoke-l{grid-area:left;background:var(--panel);border-right:1px solid var(--b0);overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
-.spoke-r{grid-area:right;background:var(--panel);border-left:1px solid var(--b0);overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column}
-.hub{grid-area:center;display:grid;grid-template-rows:auto 1fr;overflow:hidden;background:#000}
-.hub-bar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--b0)}
-.hub-tag{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--purple);background:var(--pdim);border:1px solid var(--purple);border-radius:14px;padding:4px 12px}
-.hub-tab{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--purple);text-decoration:none;padding:4px 10px;border:1px solid var(--purple);border-radius:6px}
-.hub-tab:hover{background:var(--pdim)}
-.hub-frame{width:100%;height:100%;border:none;background:#000}
-
-.slbl{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--lo);padding:11px 12px 5px;flex-shrink:0}
-
-.ltab-row{display:flex;border-bottom:1px solid var(--b0);flex-shrink:0}
-.ltab{flex:1;padding:11px 0;background:transparent;border:none;color:var(--lo);font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;border-bottom:2px solid transparent}
-.ltab.on{color:var(--cyan);border-bottom-color:var(--cyan)}
-.ltab.teach.on{color:var(--purple);border-bottom-color:var(--purple)}
-
-.jax{padding:8px 12px;border-bottom:1px solid var(--b0)}
-.axlbl{font-size:10px;color:var(--mid);margin-bottom:5px;display:flex;align-items:center;gap:5px;font-weight:600}
-.axdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.jog-row{display:grid;grid-template-columns:1fr 1fr;gap:5px}
-.jbtn{padding:7px 3px;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px}
-.jbtn:hover:not([disabled]){border-color:var(--cyan);color:var(--cyan)}
-.jbtn[disabled]{opacity:.3;cursor:not-allowed}
-
-.jrow{padding:9px 12px;border-bottom:1px solid var(--b0)}
-.jrow.near{background:var(--adim);border-left:3px solid var(--amb)}
-.jrow.at{background:var(--rdim);border-left:3px solid var(--red);animation:fd 1s infinite}
-.jrow.remote{border-left:3px solid var(--grn)}
-.jhdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
-.jname{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600}
+/* Joints */
+.jrow{padding:8px 12px;border-bottom:1px solid var(--b0);display:flex;flex-direction:column;justify-content:center;transition:background .15s}
+.jrow:last-child{border-bottom:none}
+.jrow.near{animation:fw 1.2s ease-in-out infinite;border-left:3px solid var(--amb)}
+.jrow.at{animation:fd .7s ease-in-out infinite;border-left:3px solid var(--red)}
+.jhdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.jname{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:600}
 .jdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.jval{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;min-width:50px;text-align:right}
+.jval{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;min-width:50px;text-align:right}
 .jval.near{color:var(--amb)!important}
 .jval.at{color:var(--red)!important}
-.jrange{display:flex;align-items:center;gap:6px}
-.swrap{flex:1;position:relative;height:18px;display:flex;align-items:center}
+.lbdg{font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.1em;padding:1px 5px;border-radius:3px;text-transform:uppercase}
+.lbdg.near{background:var(--adim);color:var(--amb);border:1px solid var(--amb)}
+.lbdg.at{background:var(--rdim);color:var(--red);border:1px solid var(--red)}
+.jrange{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.jmin,.jmax{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);width:26px}
+.jmax{text-align:right}
+.swrap{flex:1;position:relative;height:16px;display:flex;align-items:center}
 .strk{position:absolute;left:0;right:0;height:3px;background:var(--b1);border-radius:2px}
-.sfill{position:absolute;height:3px;border-radius:2px}
-input[type=range]{position:relative;width:100%;height:18px;appearance:none;background:transparent;cursor:pointer;z-index:1}
-input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--hi);border:2px solid var(--cyan)}
+.sfill{position:absolute;height:3px;border-radius:2px;transition:width .05s,left .05s}
+input[type=range]{position:relative;width:100%;height:16px;appearance:none;background:transparent;cursor:pointer;z-index:1}
+input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--hi);border:2px solid var(--cyan);box-shadow:0 0 4px rgba(0,212,255,.4)}
+input[type=range].ws::-webkit-slider-thumb{border-color:var(--amb)}
+input[type=range].ls::-webkit-slider-thumb{border-color:var(--red)}
 input[type=range]:disabled{cursor:not-allowed;opacity:.4}
-.sbtn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;background:var(--card);border:1px solid var(--b0);border-radius:6px;color:var(--mid);cursor:pointer;font-size:13px;flex-shrink:0}
-.sbtn:hover:not([disabled]){border-color:var(--cyan);color:var(--cyan)}
+.jinp{display:flex;align-items:center;gap:5px}
+.numinp{width:54px;background:var(--card);border:1px solid var(--b0);border-radius:4px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 5px;text-align:center;outline:none}
+.numinp.wi{border-color:var(--amb);color:var(--amb)}
+.numinp.li{border-color:var(--red);color:var(--red)}
+.numinp:disabled{opacity:.4;cursor:not-allowed}
+.sbtn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;background:var(--card);border:1px solid var(--b0);border-radius:4px;color:var(--mid);cursor:pointer;font-size:14px;flex-shrink:0}
+.sbtn:hover:not([disabled]){border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .sbtn[disabled]{opacity:.3;cursor:not-allowed}
+.zero-btn{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);background:transparent;border:1px solid var(--b1);border-radius:4px;padding:4px 8px;cursor:pointer}
+.zero-btn:hover:not(:disabled){color:var(--cyan);border-color:var(--cyan)}
 
-.acc{border-top:1px solid var(--b0)}
-.acc-hdr{width:100%;display:flex;align-items:center;justify-content:space-between;padding:11px 12px;background:var(--card);border:none;cursor:pointer;text-align:left}
-.acc-title{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mid)}
-.acc-meta{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo)}
-.acc-body{padding:10px 12px}
+/* Jog */
+.jax{padding:6px 12px;border-bottom:1px solid var(--b0);flex-shrink:0}
+.axlbl{font-size:10px;color:var(--mid);margin-bottom:4px;display:flex;align-items:center;gap:5px;font-weight:600}
+.axdot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.jog-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.jbtn{padding:8px 3px;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px}
+.jbtn:hover:not([disabled]){border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
+.jbtn.mid{background:transparent;border-color:transparent;color:var(--lo);cursor:default;font-size:8px;text-transform:uppercase}
+.jbtn[disabled]{opacity:.3;cursor:not-allowed}
+.jarr{font-size:14px}
 
-.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.pbtn{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);cursor:pointer;font-size:10px;font-weight:600}
-.pbtn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
-.pbtn:disabled{opacity:.3;cursor:not-allowed}
-.pbtn.add{border-style:dashed;color:var(--lo)}
-.pbtn-del{position:absolute;top:-5px;right:-5px;width:14px;height:14px;border-radius:50%;background:var(--red);color:#fff;font-size:8px;line-height:14px;text-align:center;border:1px solid var(--bg);cursor:pointer}
-.act-row{display:flex;gap:6px;margin-top:8px}
-.abtn{flex:1;padding:7px;background:transparent;border:1px solid var(--b1);border-radius:var(--r);color:var(--mid);font-size:10px;font-weight:600;cursor:pointer}
-.abtn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
-.abtn:disabled{opacity:.3;cursor:not-allowed}
-
-.teach-status{margin:8px 12px;padding:8px 10px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600}
+/* Teach */
+.teach-status{margin:10px 12px;padding:8px 10px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;display:flex;align-items:center;gap:8px;flex-shrink:0}
 .teach-status.on{background:var(--pdim);border:1px solid var(--purple);color:var(--purple)}
 .teach-status.off{background:var(--gdim);border:1px solid var(--grn);color:var(--grn)}
-.record-btn{margin:0 12px 8px;padding:10px;background:var(--rdim);border:1px solid var(--red);border-radius:var(--r);color:var(--red);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;width:calc(100% - 24px)}
+.record-btn{margin:0 12px 10px;padding:12px;background:var(--rdim);border:1px solid var(--red);border-radius:var(--r);color:var(--red);font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;letter-spacing:.05em;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;flex-shrink:0}
+.record-btn:hover:not(:disabled){background:var(--red);color:#fff}
 .record-btn:disabled{opacity:.3;cursor:not-allowed}
 .record-btn .rdot{width:8px;height:8px;border-radius:50%;background:currentColor}
-.wp-row{display:flex;align-items:center;justify-content:space-between;padding:7px 12px;border-bottom:1px solid var(--b0);font-family:'JetBrains Mono',monospace}
+
+.wp-row{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--b0);font-family:'JetBrains Mono',monospace}
+.wp-row:hover{background:var(--hover)}
 .wp-name{font-size:10px;font-weight:700;color:var(--hi)}
-.wp-vals{font-size:8px;color:var(--lo);margin-top:1px}
-.wp-del{background:transparent;border:1px solid var(--b1);border-radius:4px;color:var(--mid);font-size:8px;padding:3px 7px;cursor:pointer}
+.wp-vals{font-size:8px;color:var(--lo);margin-top:2px}
+.wp-del{background:transparent;border:1px solid var(--b1);border-radius:4px;color:var(--mid);font-size:9px;padding:4px 8px;cursor:pointer}
+.wp-del:hover{border-color:var(--red);color:var(--red)}
 .wp-empty{padding:20px 12px;text-align:center;font-size:10px;color:var(--lo)}
-.play-row{display:flex;gap:6px;padding:8px 12px}
-.pbtn2{flex:1;padding:8px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
+
+.play-row{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--b0);flex-shrink:0}
+.pbtn2{flex:1;padding:8px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.05em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
 .pbtn2.primary{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .pbtn2.danger{border-color:var(--red);color:var(--red);background:var(--rdim)}
 .pbtn2:disabled{opacity:.3;cursor:not-allowed}
 
-.tgrid2{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0);margin:0 12px 10px;border-radius:var(--r);overflow:hidden}
-.tcell{background:var(--card);padding:9px 11px}
-.tlbl{font-size:8px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:3px}
-.tval{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;color:var(--hi)}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px}
+.pbtn{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 6px;background:var(--card);border:1px solid var(--b0);border-radius:var(--r);color:var(--mid);cursor:pointer;font-size:10px;font-weight:600}
+.pbtn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
+.pbtn:disabled{opacity:.3;cursor:not-allowed}
+.pbtn .ico{font-size:14px}
+.pbtn.add{border-style:dashed;color:var(--lo)}
+.pbtn.add:hover:not(:disabled){border-color:var(--grn);color:var(--grn);background:var(--gdim)}
+.pbtn-del{position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;line-height:16px;text-align:center;border:1px solid var(--bg);cursor:pointer}
+
+/* ── Center (Foxglove) ── */
+.fg-bar{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:rgba(13,17,23,0.85);backdrop-filter:blur(5px);border-bottom:1px solid var(--b0);z-index:10}
+.fg-tag{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--purple);display:flex;align-items:center;gap:8px}
+.fg-tag-dot{width:6px;height:6px;background:var(--purple);border-radius:50%;box-shadow:0 0 6px var(--purple)}
+.fg-link{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--hi);text-decoration:none;padding:4px 10px;border:1px solid var(--b1);border-radius:5px;background:var(--card)}
+.fg-link:hover{border-color:var(--cyan);color:var(--cyan)}
+.fg-frame{width:100%;height:100%;border:none;background:#000}
+
+/* ── Right Panel ── */
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0)}
+.tcell{background:var(--card);padding:10px 12px}
+.tlbl{font-size:9px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+.tval{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:700;color:var(--hi);line-height:1}
 .tval.ok{color:var(--grn)}
 .tval.warn{color:var(--amb)}
 .tval.err{color:var(--red)}
-.jtrow{display:flex;align-items:center;justify-content:space-between;padding:7px 12px;border-bottom:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:11px}
-.jtname{color:var(--mid)}
-.jtdelta{font-weight:700}
 
-.rt-row{display:flex;align-items:center;gap:6px;margin-bottom:8px}
-.rt-select{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:5px 6px}
-.rt-btn{padding:6px 10px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;cursor:pointer;border:1px solid var(--cyan);color:var(--cyan);background:var(--cdim)}
-.rt-btn.stop{border-color:var(--red);color:var(--red);background:var(--rdim)}
-.rt-btn:disabled{opacity:.3;cursor:not-allowed}
-.rt-chart-wrap{height:100px;margin-bottom:8px}
-.rt-empty{padding:14px;text-align:center;font-size:10px;color:var(--lo)}
-.rt-summary{display:flex;gap:10px;align-items:center;font-family:'JetBrains Mono',monospace;font-size:10px}
-.rt-summary b{color:var(--hi)}
-.rt-csv{margin-left:auto;padding:4px 8px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:700;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
-.diag-block{margin-bottom:14px}
-.diag-block:last-child{margin-bottom:0}
-.diag-block-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--lo);margin-bottom:7px}
-.topic-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:10px}
-.topic-name{color:var(--cyan)}
-.topic-hz{color:var(--grn)}
-.node-row{padding:5px 0;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--mid);border-bottom:1px solid var(--b0)}
-.remote-status-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.remote-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-.remote-dot.linked{background:var(--grn);animation:remotepulse 1.5s infinite}
-.remote-dot.connecting{background:var(--amb)}
-.remote-dot.error{background:var(--red)}
-.remote-dot.offline,.remote-dot.idle{background:var(--lo)}
-.remote-addr-row{display:flex;gap:6px}
-.remote-addr-input{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:6px 8px}
-.remote-reset{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--cyan);background:var(--cdim);border:1px solid var(--cyan);border-radius:5px;padding:5px 8px;cursor:pointer;white-space:nowrap}
-.remote-note{font-size:9px;color:var(--lo);margin-top:8px;line-height:1.5}
+.fbrow{padding:8px 12px;border-bottom:1px solid var(--b0);flex-shrink:0}
+.fbrow:last-child{border-bottom:none}
+.fbtop{display:flex;justify-content:space-between;margin-bottom:2px}
+.fbbot{display:flex;justify-content:space-between;margin-bottom:5px}
+.fbbar-track{height:4px;background:var(--b1);border-radius:2px;overflow:hidden}
+.fbbar-fill{height:100%;border-radius:2px;transition:width .2s,background .2s}
 
-.panel-bot{grid-area:bottom;background:var(--panel);border-top:1px solid var(--b0);display:grid;grid-template-columns:340px 1fr;overflow:hidden}
-.panel-bot-jog{border-right:1px solid var(--b0);padding:10px 14px;display:flex;flex-direction:column;justify-content:center;gap:8px;overflow-y:auto}
-.panel-bot-jog-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lo);margin-bottom:2px}
-.jog-axes-row{display:flex;gap:12px}
-.jog-axis-col{flex:1;display:flex;flex-direction:column;gap:5px}
-.jog-axis-lbl{font-size:10px;color:var(--mid);font-weight:600;display:flex;align-items:center;gap:5px}
-.panel-bot-log{padding:8px 14px;display:flex;flex-direction:column;overflow:hidden}
-.panel-bot-log-hdr{display:flex;align-items:center;justify-content:space-between;flex-shrink:0;margin-bottom:6px}
-.panel-bot-log-title{font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--lo)}
-.panel-bot-log-list{flex:1;overflow-y:auto}
-.logbar-toggle{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);flex-shrink:0}
-.clearbtn{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--mid);background:var(--card);padding:4px 8px;border-radius:5px;border:1px solid var(--b0);cursor:pointer}
-.lent{display:flex;gap:8px;padding:4px 0;border-top:1px solid var(--b0);align-items:baseline;font-family:'JetBrains Mono',monospace;font-size:10px}
-.lent:first-child{border-top:none}
+/* ── Bottom Panel ── */
+.logwrap{flex:1;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:10px;display:flex;flex-direction:column-reverse;padding-bottom:10px}
+.lent{display:flex;gap:10px;padding:6px 12px;border-top:1px solid var(--b0);align-items:baseline;flex-shrink:0}
+.lent:hover{background:var(--hover)}
 .ltm{color:var(--lo);flex-shrink:0}
 .lmsg{color:var(--mid)}
 .lmsg.info{color:var(--cyan)}
@@ -279,22 +294,65 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .lmsg.warn{color:var(--amb)}
 .lmsg.error{color:var(--red)}
 
-.estop-ov{position:fixed;inset:0;background:rgba(255,59,59,.06);border:3px solid var(--red);pointer-events:none;z-index:999}
-.estop-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--red);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 22px;border-radius:0 0 8px 8px;z-index:1000}
-.demo-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--purple);color:#0D1117;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;padding:3px 16px;border-radius:0 0 6px 6px;z-index:998}
+.dkpi-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0);flex-shrink:0}
+.dkpi{background:var(--card);padding:8px 12px;display:flex;flex-direction:column}
+.dkpi-lbl{font-size:8px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:3px}
+.dkpi-val{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--hi)}
+.dkpi-val.ok{color:var(--grn)}
+.dkpi-val.warn{color:var(--amb)}
+.dkpi-val.err{color:var(--red)}
+
+.topic-row{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;border-top:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:10px}
+.topic-name{color:var(--cyan)}
+.topic-hz{color:var(--grn)}
+
+.rt-row{display:flex;align-items:center;gap:6px;padding:8px 12px;flex-shrink:0}
+.rt-select{flex:1;background:var(--card);border:1px solid var(--b0);border-radius:5px;color:var(--hi);font-family:'JetBrains Mono',monospace;font-size:10px;padding:5px}
+.rt-btn{padding:6px 12px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;cursor:pointer;border:1px solid var(--cyan);color:var(--cyan);background:var(--cdim)}
+.rt-btn.stop{border-color:var(--red);color:var(--red);background:var(--rdim)}
+.rt-btn:disabled{opacity:.3;cursor:not-allowed}
+.rt-chart-wrap{flex:1;min-height:0;padding:4px 12px}
+.rt-summary{display:flex;gap:12px;padding:8px 12px;border-top:1px solid var(--b0);background:var(--card);font-family:'JetBrains Mono',monospace;font-size:10px;align-items:center}
+.rt-summary b{color:var(--hi)}
+.rt-csv{margin-left:auto;padding:4px 10px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
+
+/* ── Strip & Modals ── */
+.strip{display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--bg);border-top:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--mid)}
+.sdot{width:6px;height:6px;border-radius:50%;background:var(--lo);flex-shrink:0}
+.sdot.ok{background:var(--grn);box-shadow:0 0 5px var(--grn)}
+.sdot.warn{background:var(--amb)}
+.sdot.err{background:var(--red)}
+
+.estop-ov{position:fixed;inset:0;background:rgba(255,59,59,.07);border:3px solid var(--red);pointer-events:none;z-index:999;animation:ep .5s infinite alternate}
+@keyframes ep{from{opacity:.5}to{opacity:1}}
+.estop-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--red);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 24px;border-radius:0 0 8px 8px;z-index:1000}
+.demo-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--purple);color:#0D1117;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;padding:4px 18px;border-radius:0 0 6px 6px;z-index:998}
+
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:2000}
 .modal{background:var(--panel);border:1px solid var(--b0);border-radius:var(--rl);padding:20px;width:320px}
-.modal-title{font-size:14px;font-weight:700;margin-bottom:8px}
+.modal-title{font-size:14px;font-weight:700;margin-bottom:8px;color:var(--hi)}
 .modal-body{font-size:12px;color:var(--mid);margin-bottom:16px;line-height:1.5}
 .modal-actions{display:flex;gap:8px}
 .modal-btn{flex:1;padding:10px;border-radius:var(--r);font-size:11px;font-family:'JetBrains Mono',monospace;font-weight:700;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
 .modal-btn.confirm{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .modal-btn.danger{border-color:var(--red);color:var(--red);background:var(--rdim)}
+
+/* 2D Preview */
+.vizwrap{padding:12px;display:flex;flex-direction:column;align-items:center;border-bottom:1px solid var(--b0)}
+.vizleg{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:8px}
+.vli{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--mid)}
+.vld{width:10px;height:4px;border-radius:2px}
+
+/* Responsive Tablet */
+@media (max-width:1100px){
+  .body{grid-template-columns:280px 1fr 240px; grid-template-rows:1fr 200px;}
+  .test-col{width:260px;}
+}
 `;
 
 function TrendChart({ results }) {
   if (!results.length) return null;
-  const W=250, H=90, padL=18, padR=8, padT=8, padB=14;
+  const W=280, H=100, padL=18, padR=10, padT=8, padB=16;
   const n=results.length;
   const maxErr=Math.max(5, ...results.map(r=>r.err))*1.15;
   const x=i=> padL + (n===1?0:(i/(n-1)))*(W-padL-padR);
@@ -307,9 +365,9 @@ function TrendChart({ results }) {
       <line x1={padL} y1={y(3)} x2={W-padR} y2={y(3)} stroke="#FFB800" strokeWidth=".5" strokeDasharray="2 2" opacity=".35"/>
       <line x1={padL} y1={H-padB} x2={W-padR} y2={H-padB} stroke="#253545" strokeWidth=".6"/>
       <line x1={padL} y1={padT} x2={padL} y2={H-padB} stroke="#253545" strokeWidth=".6"/>
-      <path d={pathD} fill="none" stroke="#00D4FF" strokeWidth="1.4"/>
-      {results.map((r,i)=><circle key={r.run} cx={x(i)} cy={y(r.err)} r="2.4" fill={dot(r.err)} stroke="#0D1117" strokeWidth=".8"/>)}
-      <text x={padL} y={padT-1} fontSize="6" fill="#3D4E5E" fontFamily="monospace">{maxErr.toFixed(0)}°</text>
+      <path d={pathD} fill="none" stroke="#00D4FF" strokeWidth="1.6"/>
+      {results.map((r,i)=><circle key={r.run} cx={x(i)} cy={y(r.err)} r="2.6" fill={dot(r.err)} stroke="#0D1117" strokeWidth=".8"/>)}
+      <text x={padL} y={padT-1} fontSize="7" fill="#3D4E5E" fontFamily="monospace">{maxErr.toFixed(0)}°</text>
     </svg>
   );
 }
@@ -330,19 +388,6 @@ function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onC
   );
 }
 
-function Accordion({ title, tag, defaultOpen=false, children }){
-  const [open,setOpen] = useState(defaultOpen);
-  return (
-    <div className="acc">
-      <button className="acc-hdr" onClick={()=>setOpen(o=>!o)}>
-        <span className="acc-title">{title}</span>
-        <span className="acc-meta">{tag} {open?"▾":"▸"}</span>
-      </button>
-      {open && <div className="acc-body">{children}</div>}
-    </div>
-  );
-}
-
 function useLongPress(cb, speed) {
   const ref=useRef(cb), iv=useRef(null), to=useRef(null);
   useEffect(()=>{ref.current=cb;},[cb]);
@@ -355,13 +400,56 @@ function useLongPress(cb, speed) {
   useEffect(()=>()=>stop(),[stop]);
   return{onMouseDown:start,onMouseUp:stop,onMouseLeave:stop,onTouchStart:start,onTouchEnd:stop};
 }
-function SBtn({children,onClick,disabled,speed,title}){
+
+function SBtn({children,onClick,disabled,speed,title,style}){
   const h=useLongPress(onClick,speed);
-  return <button className="sbtn" disabled={disabled} title={title} {...(disabled?{}:h)}>{children}</button>;
+  return <button className="sbtn" disabled={disabled} title={title} style={style} {...(disabled?{}:h)}>{children}</button>;
 }
-function JBtn({children,onClick,disabled,speed}){
+function JBtn({children,onClick,disabled,speed,cls=""}){
   const h=useLongPress(onClick,speed);
-  return <button className="jbtn" disabled={disabled} {...(disabled?{}:h)}>{children}</button>;
+  return <button className={`jbtn ${cls}`} disabled={disabled} {...(disabled?{}:h)}>{children}</button>;
+}
+
+function ArmViz({joints,style}){
+  const cx=100,cy=100,R=d=>(d*Math.PI)/180;
+  const sa=R(joints.joint_2-90),ea=R(joints.joint_2+joints.joint_3-90);
+  const wa=R(joints.joint_2+joints.joint_3+joints.joint_4-90),ba=R(joints.joint_1);
+  const L1=44,L2=32,L3=18;
+  const x1=cx+L1*Math.cos(sa),y1=cy+L1*Math.sin(sa);
+  const x2=x1+L2*Math.cos(ea),y2=y1+L2*Math.sin(ea);
+  const x3=x2+L3*Math.cos(wa),y3=y2+L3*Math.sin(wa);
+  const g=joints.joint_6/100,m=(a,b)=>(a+b)/2;
+  return(
+    <div className="vizwrap" style={style}>
+      <svg viewBox="0 0 200 200" style={{width:"100%",maxWidth:200}}>
+        <defs><pattern id="gp" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20,0L0,0L0,20" fill="none" stroke="#1E2D3D" strokeWidth=".5"/></pattern></defs>
+        <rect width="200" height="200" fill="url(#gp)" rx="8"/>
+        <circle cx={cx} cy={cy} r="84" fill="none" stroke="#1E2D3D" strokeWidth=".5" strokeDasharray="4 4"/>
+        <circle cx={cx} cy={cy} r="50" fill="none" stroke="#1E2D3D" strokeWidth=".5" strokeDasharray="2 6"/>
+        <line x1={cx} y1={cy} x2={cx+84*Math.cos(ba)} y2={cy+84*Math.sin(ba)} stroke="#00D4FF" strokeWidth=".7" strokeDasharray="3 3" opacity=".2"/>
+        <line x1={cx} y1={cy} x2={x1} y2={y1} stroke="#00D4FF" strokeWidth="7" strokeLinecap="round" opacity=".07"/>
+        <line x1={cx} y1={cy} x2={x1} y2={y1} stroke="#00D4FF" strokeWidth="3.5" strokeLinecap="round"/>
+        <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#00FF9D" strokeWidth="6" strokeLinecap="round" opacity=".07"/>
+        <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#00FF9D" strokeWidth="2.5" strokeLinecap="round"/>
+        <line x1={x2} y1={y2} x2={x3} y2={y3} stroke="#FFB800" strokeWidth="5" strokeLinecap="round" opacity=".09"/>
+        <line x1={x2} y1={y2} x2={x3} y2={y3} stroke="#FFB800" strokeWidth="2" strokeLinecap="round"/>
+        <circle cx={cx} cy={cy} r="6" fill="#0D1117" stroke="#00D4FF" strokeWidth="2"/><circle cx={cx} cy={cy} r="2.5" fill="#00D4FF"/>
+        <circle cx={x1} cy={y1} r="4.5" fill="#0D1117" stroke="#00FF9D" strokeWidth="1.5"/><circle cx={x1} cy={y1} r="2" fill="#00FF9D"/>
+        <circle cx={x2} cy={y2} r="3.5" fill="#0D1117" stroke="#FFB800" strokeWidth="1.5"/><circle cx={x2} cy={y2} r="1.5" fill="#FFB800"/>
+        <line x1={x3} y1={y3} x2={x3+8*Math.cos(wa+.3+g*.5)} y2={y3+8*Math.sin(wa+.3+g*.5)} stroke="#FF4D6D" strokeWidth="1.8" strokeLinecap="round"/>
+        <line x1={x3} y1={y3} x2={x3+8*Math.cos(wa-.3-g*.5)} y2={y3+8*Math.sin(wa-.3-g*.5)} stroke="#FF4D6D" strokeWidth="1.8" strokeLinecap="round"/>
+        <circle cx={x3} cy={y3} r="2" fill="#FF4D6D"/>
+        <text x={cx-8} y={cy+18} fontSize="7" fill="#00D4FF" fontFamily="Inter">Base</text>
+        <text x={x3+4} y={y3+3} fontSize="7" fill="#FF4D6D" fontFamily="Inter" fontWeight="600">Grip</text>
+        <text x="4" y="195" fontSize="7" fill="#3D4E5E" fontFamily="monospace">SIDE VIEW — 2D</text>
+      </svg>
+      <div className="vizleg">
+        {[["#00D4FF","Base/Upper"],["#00FF9D","Forearm"],["#FFB800","Wrist"],["#FF4D6D","Gripper"]].map(([c,l])=>(
+          <div className="vli" key={l}><div className="vld" style={{background:c}}/><span>{l}</span></div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function useDiagnostics(rosConnected, rosInstance){
@@ -369,6 +457,7 @@ function useDiagnostics(rosConnected, rosInstance){
   const [tlog,setTlog]=useState(Object.fromEntries(TRACKED.map(t=>[t,{count:0,hz:0,last:"-"}])));
   const [info,setInfo]=useState({topics:[],nodes:[]});
   const lastT=useRef({});
+
   useEffect(()=>{
     if(!rosConnected||!rosInstance) return;
     const ROSLIB=window.ROSLIB, subs=[];
@@ -377,13 +466,12 @@ function useDiagnostics(rosConnected, rosInstance){
     const cvSub=new ROSLIB.Topic({ros:rosInstance,name:"/cmd_vel",messageType:"geometry_msgs/Twist"});
     cvSub.subscribe(()=>bump("/cmd_vel")); subs.push(cvSub);
     try{
-      new ROSLIB.Service({ros:rosInstance,name:"/rosapi/topics",serviceType:"rosapi/Topics"})
-        .callService(new ROSLIB.ServiceRequest({}),r=>{ if(r?.topics) setInfo(p=>({...p,topics:r.topics})); });
-      new ROSLIB.Service({ros:rosInstance,name:"/rosapi/nodes",serviceType:"rosapi/Nodes"})
-        .callService(new ROSLIB.ServiceRequest({}),r=>{ if(r?.nodes) setInfo(p=>({...p,nodes:r.nodes})); });
+      new ROSLIB.Service({ros:rosInstance,name:"/rosapi/topics",serviceType:"rosapi/Topics"}).callService(new ROSLIB.ServiceRequest({}),r=>{ if(r?.topics) setInfo(p=>({...p,topics:r.topics})); });
+      new ROSLIB.Service({ros:rosInstance,name:"/rosapi/nodes",serviceType:"rosapi/Nodes"}).callService(new ROSLIB.ServiceRequest({}),r=>{ if(r?.nodes) setInfo(p=>({...p,nodes:r.nodes})); });
     }catch(e){}
     return()=>subs.forEach(s=>s.unsubscribe());
   },[rosConnected,rosInstance]);
+
   const bump=name=>{
     const now=Date.now();
     setTlog(prev=>{
@@ -398,8 +486,6 @@ function useDiagnostics(rosConnected, rosInstance){
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 export default function App(){
-  const [leftTab,setLeftTab] = useState("control");
-  const [speedOpen,setSpeedOpen] = useState(false);
   const [conn,setConn]   = useState("disconnected");
   const [estp,setEstp]   = useState(false);
   const [joints,setJ]    = useState(initJ());
@@ -409,6 +495,9 @@ export default function App(){
   const [url,setUrlRaw]  = useState(initialUrl());
   const [hz,setHz]       = useState(0);
   const [confirmAction,setConfirmAction] = useState(null);
+  
+  // New UI Tab State for the Left Panel
+  const [leftTab,setLeftTab] = useState("manual");
 
   const [mode,setModeRaw] = useState(initialMode());
   const setMode = useCallback(v=>{ setModeRaw(v); safeSet("armctrl_mode", v); }, []);
@@ -418,43 +507,18 @@ export default function App(){
   const [waypoints,setWaypoints] = useState(initialWaypoints());
   const [playing,setPlaying] = useState(false);
   const playCancelRef = useRef(false);
+
   const [testRunning,setTestRunning] = useState(false);
   const [testResults,setTestResults] = useState([]);
   const [testTarget,setTestTarget] = useState(DEFAULT_PRESETS[1].name);
   const testCancelRef = useRef(false);
 
-  const [remoteIpLinked,setRemoteIpLinked] = useState(initialRemoteLinked());
-  const [remoteBrokerUrl,setRemoteBrokerUrlRaw] = useState(()=>initialRemoteUrl() || `ws://${hostOf(initialUrl())}:9001`);
-  const [remoteStatus,setRemoteStatus] = useState("idle");
-  const [remoteActive,setRemoteActive] = useState(false);
-  const [remoteActiveJoint,setRemoteActiveJoint] = useState(null);
-
-  useEffect(()=>{
-    if(remoteIpLinked){
-      const derived = `ws://${hostOf(url)}:9001`;
-      setRemoteBrokerUrlRaw(derived);
-      safeSet("armctrl_remote_url", derived);
-    }
-  },[url, remoteIpLinked]);
-
-  const setRemoteBrokerUrl = useCallback(v=>{
-    const derived = `ws://${stripProto(v)}`;
-    setRemoteBrokerUrlRaw(derived);
-    safeSet("armctrl_remote_url", derived);
-    setRemoteIpLinked(false);
-    safeSet("armctrl_remote_linked","false");
-  },[]);
-  const resetRemoteToRobotIp = ()=>{ setRemoteIpLinked(true); safeSet("armctrl_remote_linked","true"); };
-
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
-  const logHistoryRef=useRef([]);
+  const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
-  const speedRef=useRef(speed);
-  const disRef=useRef(false);
-
+  
   useEffect(()=>{estRef.current=estp;},[estp]);
-  useEffect(()=>{speedRef.current=speed;},[speed]);
   useEffect(()=>{ safeSet("armctrl_waypoints", JSON.stringify(waypoints)); },[waypoints]);
 
   const log=useCallback((msg,type="info")=>{
@@ -465,7 +529,7 @@ export default function App(){
   },[]);
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
 
-  const setUrl = useCallback(v=>{ const clean="ws://"+stripProto(v); setUrlRaw(clean); safeSet("armctrl_url", clean); },[]);
+  const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
   const setSp  = useCallback(v=>{ setSpRaw(v); safeSet("armctrl_speed", String(v)); },[]);
 
   const dispatchCommand = useCallback((type, payload) => {
@@ -505,14 +569,14 @@ export default function App(){
     clearTimeout(reconnectTimerRef.current);
     if (mode === "mock") {
       setConn("connecting"); log("[SIM] Simulating connection…","warn");
-      setTimeout(()=>{ setConn("connected"); log("[SIM] Simulated connection established — no hardware required","success"); }, 400);
+      setTimeout(()=>{ setConn("connected"); log("[SIM] Simulated connection established","success"); }, 400);
       return;
     }
     const ROSLIB=window.ROSLIB;
-    if(!ROSLIB){log("roslib.js not loaded — add CDN to index.html","error");return;}
+    if(!ROSLIB){log("roslib.js not loaded","error");return;}
     if(rosRef.current) rosRef.current.close();
     setConn("connecting");
-    log(reconnectAttemptRef.current>0 ? `Auto-reconnecting (attempt ${reconnectAttemptRef.current}/8) → ${url}` : `Connecting → ${url}`,"warn");
+    log(reconnectAttemptRef.current>0 ? `Auto-reconnecting (${reconnectAttemptRef.current}/8) → ${url}` : `Connecting → ${url}`,"warn");
     const ros=new ROSLIB.Ros({url}); rosRef.current=ros;
     ros.on("connection",()=>{
       reconnectAttemptRef.current=0;
@@ -536,7 +600,7 @@ export default function App(){
         log(`Connection dropped — retrying in ${(delay/1000).toFixed(1)}s`,"warn");
         reconnectTimerRef.current=setTimeout(()=>{ reconnectAttemptRef.current+=1; connect(); },delay);
       } else {
-        if(reconnectAttemptRef.current>=8) log("Auto-reconnect gave up after 8 attempts — press Connect to retry manually","error");
+        if(reconnectAttemptRef.current>=8) log("Auto-reconnect gave up","error");
         else log("Connection closed","warn");
         setConn("disconnected");
         reconnectAttemptRef.current=0;
@@ -548,7 +612,7 @@ export default function App(){
     manualDisconnectRef.current=true;
     clearTimeout(reconnectTimerRef.current);
     reconnectAttemptRef.current=0;
-    if (mode === "mock") { setConn("disconnected"); log("[SIM] Simulated connection closed","warn"); return; }
+    if (mode === "mock") { setConn("disconnected"); log("[SIM] Connection closed","warn"); return; }
     if(rosRef.current){rosRef.current.close();rosRef.current=null;}
   },[mode,log]);
 
@@ -565,9 +629,8 @@ export default function App(){
   },[joints,log,dispatchCommand]);
 
   const handleResume=()=>setConfirmAction({
-    title:"Resume motion?", body:"Clears the emergency stop and allows the arm to move again. Make sure the area is clear.",
-    confirmLabel:"Resume", danger:false,
-    run:()=>{ setEstp(false); log("Emergency stop cleared — motion resumed","success"); },
+    title:"Resume motion?", body:"Clears emergency stop.", confirmLabel:"Resume", danger:false,
+    run:()=>{ setEstp(false); log("Emergency stop cleared","success"); },
   });
 
   const confirmOrRun=(opts)=>{
@@ -578,8 +641,8 @@ export default function App(){
   useEffect(()=>{
     const onKey=(e)=>{
       if(e.code!=="Space") return;
-      const tagName=document.activeElement?.tagName;
-      if(tagName==="INPUT"||tagName==="TEXTAREA"||tagName==="SELECT") return;
+      const tag=document.activeElement?.tagName;
+      if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT") return;
       e.preventDefault();
       if(!estRef.current) handleEstop();
     };
@@ -599,44 +662,39 @@ export default function App(){
   useEffect(()=>{if(conn==="connected"&&!estp) publish(joints);},[joints]); // eslint-disable-line
 
   const requestPreset=(p)=>confirmOrRun({
-    title:`Move to "${p.name}"?`, body:"The arm will move to this saved position. Make sure the area is clear.",
-    confirmLabel:"Move Arm", danger:false,
+    title:`Move to "${p.name}"?`, body:"Arm will move here.", confirmLabel:"Move Arm", danger:false,
     run:()=>{ setJ(p.values); log(`Preset applied: ${p.name}`,"info"); },
   });
   const requestReset=()=>confirmOrRun({
-    title:"Reset all joints to 0°?", body:"This moves every joint back to zero. Make sure the area is clear.",
-    confirmLabel:"Reset", danger:false,
+    title:"Reset all joints?", body:"Moves back to zero.", confirmLabel:"Reset", danger:false,
     run:()=>{ setJ(initJ()); log("All joints → 0°","info"); },
   });
 
   const addPreset=()=>{
-    const name = window.prompt("Name this position (this is the arm's CURRENT pose):");
+    const name = window.prompt("Name this position:");
     if(!name || !name.trim()) return;
     const trimmed = name.trim();
-    if(presets.some(p=>p.name.toLowerCase()===trimmed.toLowerCase())){ log(`A position named "${trimmed}" already exists`,"warn"); return; }
+    if(presets.some(p=>p.name.toLowerCase()===trimmed.toLowerCase())){ log("Name exists","warn"); return; }
     setPresets(p=>[...p, { name:trimmed, icon:"★", values:{...joints}, builtin:false }]);
-    log(`Saved current position as "${trimmed}"`,"success");
+    log(`Saved "${trimmed}"`,"success");
   };
   const deletePreset=(name)=>confirmOrRun({
-    title:`Delete "${name}"?`, body:"Removes this saved position. This can't be undone.",
-    confirmLabel:"Delete", danger:true,
+    title:`Delete "${name}"?`, body:"Cannot be undone.", confirmLabel:"Delete", danger:true,
     run:()=>{
       setPresets(p=>p.filter(x=>x.name!==name));
       if(testTarget===name) setTestTarget(presets.find(p=>p.builtin&&p.name!=="Home")?.name || "Grab Ready");
-      log(`Deleted position "${name}"`,"warn");
+      log(`Deleted "${name}"`,"warn");
     },
   });
 
   const publishPower=(on)=>dispatchCommand("ARM_POWER",{on});
   const requestArmPower=(on)=>confirmOrRun({
     title: on ? "Re-energize motors?" : "Enter Teach Mode?",
-    body: on
-      ? "Motors will re-energize and hold current position. Make sure hands are clear."
-      : "Motors de-energize — the arm goes slack and can be moved by hand. Web joint control disables while in Teach Mode.",
+    body: on ? "Motors will re-energize." : "Motors de-energize for hand manipulation.",
     confirmLabel: on ? "Re-energize" : "Enter Teach Mode", danger:false,
     run:()=>{
       setArmPower(on); publishPower(on);
-      log(on?"Arm power ON — motors energized":"Arm power OFF — Teach Mode active", on?"success":"warn");
+      log(on?"Power ON":"Power OFF — Teach Mode", on?"success":"warn");
       if(!on) setLeftTab("teach");
     },
   });
@@ -644,53 +702,43 @@ export default function App(){
   const recordWaypoint=()=>{
     const snapshot={...feedRef.current};
     setWaypoints(p=>[...p,{id:Date.now(),values:snapshot,label:`Point ${p.length+1}`}]);
-    log(`Waypoint recorded (Point ${waypoints.length+1})`,"success");
+    log(`Recorded Point ${waypoints.length+1}`,"success");
   };
   const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id));
   const clearWaypoints=()=>confirmOrRun({
-    title:"Clear all waypoints?", body:"Deletes the entire recorded trajectory. This can't be undone.",
-    confirmLabel:"Clear", danger:true,
+    title:"Clear trajectory?", body:"Cannot be undone.", confirmLabel:"Clear", danger:true,
     run:()=>{ setWaypoints([]); log("Trajectory cleared","warn"); },
   });
   const stopPlayback=()=>{ playCancelRef.current=true; };
   const playTrajectory=()=>{
     if(waypoints.length===0) return;
     confirmOrRun({
-      title:"Play recorded trajectory?",
-      body:`Moves through ${waypoints.length} waypoint(s) in sequence. Motors must be powered ON. Make sure the area is clear.`,
-      confirmLabel:"Play", danger:false,
+      title:"Play trajectory?", body:`Moves through ${waypoints.length} points.`, confirmLabel:"Play", danger:false,
       run: async ()=>{
-        if(!armPower){ log("Playback blocked — re-energize the arm first","error"); return; }
+        if(!armPower){ log("Re-energize first","error"); return; }
         playCancelRef.current=false; setPlaying(true);
-        log(`Playing trajectory (${waypoints.length} points)`,"info");
+        log(`Playing trajectory`,"info");
         for(const wp of waypoints){
           if(playCancelRef.current) break;
           setJ(prev=>({...prev,...wp.values}));
           await new Promise(res=>setTimeout(res,1500));
         }
         setPlaying(false);
-        log(playCancelRef.current?"Playback stopped":"Playback complete", playCancelRef.current?"warn":"success");
+        log(playCancelRef.current?"Stopped":"Complete", playCancelRef.current?"warn":"success");
       },
     });
   };
 
   const exportSystemLogCSV=()=>{
     const hist=logHistoryRef.current;
-    if(hist.length===0){ log("No system log entries to export","warn"); return; }
+    if(hist.length===0){ log("No logs","warn"); return; }
     const esc=(s)=>`"${String(s).replace(/"/g,'""')}"`;
-    const jointCols=JOINTS.map(j=>j.short).join(",");
-    const header=`timestamp_iso,time,type,message,${jointCols}\n`;
-    const rows=hist.map(e=>{
-      const j=e.joints||{};
-      const jointVals=JOINTS.map(jt=>(j[jt.id]??0).toFixed(2)).join(",");
-      return `${e.iso},${e.time},${e.type},${esc(e.msg)},${jointVals}`;
-    }).join("\n");
-    const csv=`# ARM Control — full session log\n# exported,${new Date().toISOString()}\n# entries,${hist.length}\n${header}${rows}\n`;
-    const blob=new Blob([csv],{type:"text/csv"});
-    const objUrl=URL.createObjectURL(blob);
-    const a=document.createElement("a"); a.href=objUrl; a.download=`arm_session_log_${Date.now()}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(objUrl);
-    log(`Exported full session log (${hist.length} entries) as CSV`,"success");
+    const header=`timestamp_iso,time,type,message,${JOINTS.map(j=>j.short).join(",")}\n`;
+    const rows=hist.map(e=>`${e.iso},${e.time},${e.type},${esc(e.msg)},${JOINTS.map(jt=>(e.joints[jt.id]??0).toFixed(2)).join(",")}`).join("\n");
+    const blob=new Blob([`# Full log\n${header}${rows}\n`],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download=`arm_log_${Date.now()}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
 
   const stopTest=()=>{ testCancelRef.current=true; };
@@ -698,31 +746,25 @@ export default function App(){
     if(testResults.length===0) return;
     const avg=testResults.reduce((a,r)=>a+r.err,0)/testResults.length;
     const max=Math.max(...testResults.map(r=>r.err));
-    const meta=`# target,${testTarget}\n# avg_error_deg,${avg.toFixed(3)}\n# max_error_deg,${max.toFixed(3)}\n# runs,${testResults.length}\n# exported,${new Date().toISOString()}\n`;
+    const meta=`# target,${testTarget}\n# avg_error,${avg.toFixed(3)}\n# max_error,${max.toFixed(3)}\n`;
     const rows=testResults.map(r=>`${r.run},${r.err.toFixed(3)}`).join("\n");
-    const csv=`${meta}run,error_deg\n${rows}\n`;
-    const blob=new Blob([csv],{type:"text/csv"});
-    const objUrl=URL.createObjectURL(blob);
-    const a=document.createElement("a"); a.href=objUrl; a.download=`repeatability_${testTarget.replace(/\s+/g,"_")}_${Date.now()}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(objUrl);
-    log(`Exported ${testResults.length} test runs as CSV`,"success");
+    const blob=new Blob([`${meta}run,error_deg\n${rows}\n`],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download=`test_${Date.now()}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
 
   const runRepeatabilityTest=(targetPreset,cycles=10)=>{
     const home = presets.find(p=>p.name==="Home") || DEFAULT_PRESETS[0];
     confirmOrRun({
-      title:"Run repeatability test?",
-      body:`Cycles between Home and "${targetPreset.name}" ${cycles} times, logging position error each stop (~${Math.round(cycles*3)}s).`,
-      confirmLabel:"Run Test", danger:false,
+      title:"Run test?", body:`Cycles to "${targetPreset.name}" ${cycles} times.`, confirmLabel:"Run Test", danger:false,
       run: async ()=>{
         testCancelRef.current=false; setTestRunning(true); setTestResults([]);
-        log(`Repeatability test: ${cycles} cycles → "${targetPreset.name}"`,"info");
+        log(`Test: ${cycles} cycles → "${targetPreset.name}"`,"info");
         for(let i=0;i<cycles;i++){
           if(testCancelRef.current) break;
-          setJ(home.values);
-          await new Promise(res=>setTimeout(res,1500));
-          setJ(targetPreset.values);
-          await new Promise(res=>setTimeout(res,1500));
+          setJ(home.values); await new Promise(res=>setTimeout(res,1500));
+          setJ(targetPreset.values); await new Promise(res=>setTimeout(res,1500));
           const err=Math.max(...JOINTS.map(j=>Math.abs((targetPreset.values[j.id]||0)-(feedRef.current[j.id]||0))));
           setTestResults(p=>[...p,{run:i+1,err}]);
         }
@@ -740,49 +782,8 @@ export default function App(){
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
-  useEffect(()=>{ disRef.current=dis; },[dis]);
-
-  const lastRemoteCmd = useRef(0);
-  const remoteActiveTimeout = useRef(null);
-
-  useEffect(() => {
-    setRemoteStatus("connecting");
-    const client = mqtt.connect(remoteBrokerUrl);
-    client.on("connect", () => {
-      setRemoteStatus("linked");
-      client.subscribe("remote/data");
-      log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
-    });
-    client.on("reconnect", () => setRemoteStatus("connecting"));
-    client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
-    client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
-    client.on("message", (topic, message) => {
-      if (topic !== "remote/data" || estRef.current || disRef.current) return;
-      const now = Date.now();
-      if (now - lastRemoteCmd.current < 40) return;
-      lastRemoteCmd.current = now;
-      try {
-        const data = JSON.parse(message.toString());
-        const jogAmount = JOG_DEG[speedRef.current];
-        const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
-        let moved = null;
-        if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
-        if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
-        if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
-        if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
-        if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
-        if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
-        if (moved) {
-          setRemoteActive(true); setRemoteActiveJoint(moved);
-          clearTimeout(remoteActiveTimeout.current);
-          remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
-        }
-      } catch (e) { console.error("MQTT parsing error", e); }
-    });
-    return () => { clearTimeout(remoteActiveTimeout.current); client.end(true); };
-  }, [stepJ, remoteBrokerUrl, log]);
-
-  const host = hostOf(url);
+  // Foxglove URL Routing
+  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
   const fgTarget = `ws://${host}:8765`;
   const fgUrl = `http://${host}/ui/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
 
@@ -799,252 +800,254 @@ export default function App(){
       />
 
       <div className="shell">
+
+        {/* ── HEADER ── */}
         <header className="hdr">
           <div className="brand"><div className={`bdot ${conn!=="connected"?"off":""}`}/>ARM · CONTROL</div>
-
-          <div className="hdr-url-wrap">
-            <span className="hdr-url-label">ws://</span>
-            <input className="hdr-url-input" value={stripProto(url)} onChange={e=>setUrl(e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
-          </div>
-
-          <button className="hbtn conn" onClick={connect} disabled={conn!=="disconnected"}>{conn==="connecting"?"Connecting…":"Connect"}</button>
-          <button className="hbtn disc" onClick={disconnect} disabled={conn==="disconnected"}>Disconnect</button>
-          <div className={`badge ${conn}`}><div className="bdg-dot"/>{conn==="connected"?"ONLINE":conn==="connecting"?"CONNECTING":"OFFLINE"}</div>
-
-          <button className={`mode-toggle ${mode==="mock"?"sim":""}`} onClick={()=>setMode(mode==="ros"?"mock":"ros")} disabled={conn!=="disconnected"} title="Local Simulation Mode">{mode==="mock"?"SIM":"LIVE"}</button>
-          <button className={`mode-toggle ${demoMode?"demo":""}`} onClick={()=>setDemoMode(d=>!d)} title="Demo Mode — skips confirmations; Resume always still confirms">{demoMode?"DEMO ON":"DEMO OFF"}</button>
-
-          <div className="speed-wrap">
-            <button className="speed-btn" onClick={()=>setSpeedOpen(o=>!o)}>SPEED: {SPEEDS[speed].toUpperCase()} {speedOpen?"▾":"▸"}</button>
-            {speedOpen && (
-              <div className="speed-pop">
-                {SPEEDS.map((s,i)=>{
-                  const rate=(JOG_DEG[i]/(JOG_MS[i]/1000)).toFixed(1);
-                  return <button key={s} className={`spd ${speed===i?"on":""}`} onClick={()=>{setSp(i);setSpeedOpen(false);}}><div>{s}</div><div className="spd-rate">{rate}°/t</div></button>;
-                })}
-              </div>
-            )}
-          </div>
-
-          <div className="pwr-hdr">
-            <div className="pwr-hdr-label">
-              <span className="pwr-hdr-title">{armPower?"Energized":"De-energized"}</span>
-              <span className="pwr-hdr-sub">{armPower?"NORMAL":"BACK-DRIVABLE"}</span>
+          <div className="hdr-center">
+            <div className="hdr-url-wrap">
+              <span className="hdr-url-label">ws://</span>
+              <input className="hdr-url-input" value={url.replace(/^ws:\/\//,"")} onChange={e=>setUrl("ws://"+e.target.value)} disabled={conn==="connected"||mode==="mock"} spellCheck={false}/>
             </div>
-            <button className={`tgl ${armPower?"on":""}`} onClick={()=>requestArmPower(!armPower)} disabled={conn!=="connected"||estp}><div className="tgl-thumb"/></button>
+            <button className={`mode-toggle ${mode==="mock"?"sim":""}`} onClick={()=>setMode(mode==="ros"?"mock":"ros")} disabled={conn!=="disconnected"}>{mode==="mock"?"SIM":"LIVE"}</button>
+            <button className={`mode-toggle ${demoMode?"demo":""}`} onClick={()=>setDemoMode(d=>!d)}>{demoMode?"DEMO ON":"DEMO OFF"}</button>
+            <button className="hbtn conn" onClick={connect} disabled={conn!=="disconnected"}>{conn==="connecting"?"Connecting…":"Connect"}</button>
+            <button className="hbtn disc" onClick={disconnect} disabled={conn==="disconnected"}>Disconnect</button>
           </div>
-
-          <div className="hdr-spacer"/>
-
-          {estp
-            ? <button className="hbtn resume" onClick={handleResume}>CLEAR EMERGENCY</button>
-            : <button className="hbtn estop" onClick={handleEstop} title="Emergency Stop — or press SPACE">⬛ E-STOP</button>}
+          <div className="hdr-r">
+            <div className={`badge ${conn}`}><div className="bdg-dot"/>{conn==="connected"?"ONLINE":conn==="connecting"?"CONNECTING":"OFFLINE"}</div>
+            {estp ? <button className="hbtn resume" onClick={handleResume}>CLEAR EMERGENCY</button> : <button className="hbtn estop" onClick={handleEstop}>⬛ E-STOP</button>}
+          </div>
         </header>
 
-        <div className="holygrail">
-          <aside className="spoke-l">
-            <div className="ltab-row">
-              <button className={`ltab ${leftTab==="control"?"on":""}`} onClick={()=>setLeftTab("control")}>Control</button>
-              <button className={`ltab teach ${leftTab==="teach"?"on":""}`} onClick={()=>setLeftTab("teach")}>Teach</button>
+        {/* ── COCKPIT BODY ── */}
+        <div className="body">
+
+          {/* ── LEFT PANEL (Tabs) ── */}
+          <aside className="panel-left">
+            <div className="left-tabs">
+              <button className={`ltab ${leftTab==="manual"?"on":""}`} onClick={()=>setLeftTab("manual")}>Manual Control</button>
+              <button className={`ltab teach ${leftTab==="teach"?"on":""}`} onClick={()=>setLeftTab("teach")}>Teach & Auto</button>
             </div>
-
-            {leftTab==="control" ? (
-              <>
-                <div className="slbl">Joint Controls</div>
-                {JOINTS.map(j=>{
-                  const val=joints[j.id], fill=fillSt(val,j.min,j.max,j.color);
-                  const isN=nearLim(val,j), isA=atLim(val,j);
-                  const isRemote = remoteActiveJoint===j.id;
-                  return(
-                    <div className={`jrow ${isA?"at":isN?"near":isRemote?"remote":""}`} key={j.id}>
-                      <div className="jhdr">
-                        <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label}</div>
-                        <div className={`jval ${isA?"at":isN?"near":""}`} style={isN||isA?{}:{color:j.color}}>{val.toFixed(1)}{j.unit}</div>
-                      </div>
-                      <div className="jrange">
-                        <div className="swrap"><div className="strk"/><div className="sfill" style={fill}/>
-                          <input type="range" min={j.min} max={j.max} step=".5" value={val} onChange={e=>setJabs(j.id,e.target.value)} disabled={dis}/>
+            
+            <div className="left-content">
+              {leftTab === "manual" ? (
+                <>
+                  <div className="spd-row">
+                    {SPEEDS.map((s,i)=>{
+                      const rate = (JOG_DEG[i] / (JOG_MS[i]/1000)).toFixed(1);
+                      return <button key={s} className={`spd ${speed===i?"on":""}`} onClick={()=>setSp(i)}><div>{s}</div><div className="spd-rate">{rate}°/s</div></button>;
+                    })}
+                  </div>
+                  <div className="pwr-row">
+                    <div className="pwr-label"><span className="pwr-title">{armPower?"Energized":"De-energized"}</span><span className="pwr-sub">{armPower?"NORMAL CONTROL":"BACK-DRIVABLE"}</span></div>
+                    <button className={`tgl ${armPower?"on":""}`} onClick={()=>requestArmPower(!armPower)} disabled={conn!=="connected"||estp}><div className="tgl-thumb"/></button>
+                  </div>
+                  <div className="plbl">Joint Sliders <button className="zero-btn" onClick={requestReset} disabled={dis}>Zero All</button></div>
+                  <div>
+                    {JOINTS.map(j=>{
+                      const val=joints[j.id], fill=fillSt(val,j.min,j.max,j.color);
+                      const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
+                      return(
+                        <div className={`jrow ${isA?"at":isN?"near":""}`} key={j.id}>
+                          <div className="jhdr">
+                            <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label} {isA&&<span className="lbdg at">LIMIT</span>}{!isA&&isN&&<span className="lbdg near">NEAR</span>}</div>
+                            <div className={`jval ${isA?"at":isN?"near":""}`} style={isN||isA?{}:{color:j.color}}>{val.toFixed(1)}{j.unit}</div>
+                          </div>
+                          <div className="jrange">
+                            <span className="jmin">{j.min}</span>
+                            <div className="swrap">
+                              <div className="strk"/><div className="sfill" style={fill}/>
+                              <input type="range" className={isA?"ls":isN?"ws":""} min={j.min} max={j.max} step=".5" value={val} onChange={e=>setJabs(j.id,e.target.value)} disabled={dis}/>
+                            </div>
+                            <span className="jmax">{j.max}</span>
+                          </div>
+                          <div className="jinp">
+                            <SBtn speed={speed} onClick={()=>stepJ(j.id,-step)} disabled={dis}>−</SBtn>
+                            <input className={`numinp ${isA?"li":isN?"wi":""}`} type="number" value={val.toFixed(1)} min={j.min} max={j.max} step=".5" onChange={e=>setJabs(j.id,e.target.value)} disabled={dis}/>
+                            <SBtn speed={speed} onClick={()=>stepJ(j.id,step)} disabled={dis}>+</SBtn>
+                            <button className="sbtn" style={{marginLeft:"auto",width:32}} onClick={()=>setJabs(j.id,0)} disabled={dis}>⊙</button>
+                          </div>
                         </div>
-                        <SBtn speed={speed} onClick={()=>setJabs(j.id,0)} disabled={dis} title="Zero">⊙</SBtn>
+                      );
+                    })}
+                  </div>
+                  <div className="plbl">Cartesian Jog</div>
+                  <div style={{padding:"6px 0 10px"}}>
+                    {[
+                      {axis:"X",label:"Base / Yaw",  color:"#00D4FF",id:"joint_1",dir:["←","→"]},
+                      {axis:"Y",label:"Shoulder",    color:"#00FF9D",id:"joint_2",dir:["↓","↑"]},
+                      {axis:"Z",label:"Elbow",       color:"#FFB800",id:"joint_3",dir:["←","→"]},
+                    ].map(({axis,label,color,id,dir})=>(
+                      <div className="jax" key={axis}>
+                        <div className="axlbl"><div className="axdot" style={{background:color}}/>{axis} — {label}</div>
+                        <div className="jog-row">
+                          <JBtn speed={speed} onClick={()=>stepJ(id,-JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[0]}</span><span>{axis}−</span></JBtn>
+                          <div className="jbtn mid">{axis}<br/>hold</div>
+                          <JBtn speed={speed} onClick={()=>stepJ(id,JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[1]}</span><span>{axis}+</span></JBtn>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-                <div style={{padding:"8px 12px"}}>
-                  <button className="abtn" style={{width:"100%"}} onClick={()=>publish()} disabled={dis}>Publish</button>
-                </div>
-
-                <Accordion title="Saved Positions" tag={`${presets.length}`}>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className={`teach-status ${armPower?"off":"on"}`}>
+                    {armPower ? "Motors energized — turn Power OFF to teach" : "Arm is free — move it by hand, then record"}
+                  </div>
+                  <button className="record-btn" onClick={recordWaypoint} disabled={armPower||conn!=="connected"||estp}>
+                    <span className="rdot"/>RECORD WAYPOINT
+                  </button>
+                  <div className="plbl">Trajectory ({waypoints.length})</div>
+                  <div className="wp-scroll">
+                    {waypoints.length===0
+                      ? <div className="wp-empty">No waypoints yet.</div>
+                      : waypoints.map(wp=>(
+                        <div className="wp-row" key={wp.id}>
+                          <div>
+                            <div className="wp-name">{wp.label}</div>
+                            <div className="wp-vals">{JOINTS.map(j=>`${j.short}:${(wp.values[j.id]??0).toFixed(0)}`).join(" ")}</div>
+                          </div>
+                          <button className="wp-del" onClick={()=>deleteWaypoint(wp.id)}>DEL</button>
+                        </div>
+                      ))
+                    }
+                  </div>
+                  <div className="play-row">
+                    <button className="pbtn2 primary" onClick={playTrajectory} disabled={waypoints.length===0||playing||!armPower||conn!=="connected"}>▶ PLAY</button>
+                    <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
+                    <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
+                  </div>
+                  <div className="plbl">Saved Positions</div>
                   <div className="pgrid">
                     {presets.map(p=>(
                       <button key={p.name} className="pbtn" onClick={()=>requestPreset(p)} disabled={dis}>
                         {!p.builtin && <span className="pbtn-del" onClick={(e)=>{e.stopPropagation();deletePreset(p.name);}}>✕</span>}
-                        <span>{p.icon}</span>{p.name}
+                        <span className="ico">{p.icon}</span>{p.name}
                       </button>
                     ))}
-                    <button className="pbtn add" onClick={addPreset} disabled={conn!=="connected"}>+ Save</button>
+                    <button className="pbtn add" onClick={addPreset} disabled={conn!=="connected"}><span className="ico">+</span>Save Current</button>
                   </div>
-                  <div className="act-row"><button className="abtn" onClick={requestReset} disabled={dis}>Reset All</button></div>
-                </Accordion>
-              </>
-            ) : (
-              <>
-                <div className="teach-status" style={{margin:"10px 12px"}}>
-                  {armPower ? "Motors energized — toggle Arm Power in the top bar to teach" : "Arm is free — move it by hand, then record"}
-                </div>
-                <button className="record-btn" onClick={recordWaypoint} disabled={armPower||conn!=="connected"||estp}><span className="rdot"/>RECORD WAYPOINT</button>
-
-                <div className="slbl">Trajectory ({waypoints.length})</div>
-                <div style={{maxHeight:320,overflowY:"auto"}}>
-                  {waypoints.length===0
-                    ? <div className="wp-empty">No waypoints yet.</div>
-                    : waypoints.map(wp=>(
-                      <div className="wp-row" key={wp.id}>
-                        <div><div className="wp-name">{wp.label}</div><div className="wp-vals">{JOINTS.map(j=>`${j.short}:${(wp.values[j.id]??0).toFixed(0)}`).join(" ")}</div></div>
-                        <button className="wp-del" onClick={()=>deleteWaypoint(wp.id)}>DEL</button>
-                      </div>
-                    ))}
-                </div>
-                <div className="play-row">
-                  <button className="pbtn2 primary" onClick={playTrajectory} disabled={waypoints.length===0||playing||!armPower||conn!=="connected"}>▶ Play</button>
-                  <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ Stop</button>
-                  <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>Clear</button>
-                </div>
-              </>
-            )}
+                </>
+              )}
+            </div>
           </aside>
 
-          <main className="hub">
-            <div className="hub-bar">
-              <span className="hub-tag">FOXGLOVE 3D — HUB</span>
-              <a href={fgUrl} target="_blank" rel="noopener noreferrer" className="hub-tab">Open in New Tab ↗</a>
+          {/* ── CENTER PANEL (Foxglove) ── */}
+          <main className="panel-center">
+            <div className="fg-bar">
+              <span className="fg-tag"><div className="fg-tag-dot"/>FOXGLOVE 3D LIVE</span>
+              <a href={fgUrl} target="_blank" rel="noopener noreferrer" className="fg-link">Open in New Tab ↗</a>
             </div>
-            <iframe src={fgUrl} title="Foxglove" className="hub-frame"/>
+            <iframe src={fgUrl} title="Foxglove" className="fg-frame"/>
           </main>
 
-          <aside className="spoke-r">
-            <div className="slbl">Telemetry &amp; Status</div>
-            <div className="tgrid2">
-              <div className="tcell"><div className="tlbl">Remote Link</div><div className={`tval ${remoteStatus==="linked"?"ok":remoteStatus==="error"?"err":"warn"}`}>{remoteStatus.toUpperCase()}</div></div>
-              <div className="tcell"><div className="tlbl">Active Input</div><div className="tval" style={{color:remoteActive?"var(--grn)":"var(--cyan)"}}>{remoteActive?"REMOTE":"WEB UI"}</div></div>
-              <div className="tcell"><div className="tlbl">Max Error</div><div className={`tval ${maxErr>5?"warn":"ok"}`}>{maxErr.toFixed(1)}°</div></div>
-              <div className="tcell"><div className="tlbl">Limits</div><div className={`tval ${anyNear?"warn":"ok"}`}>{anyNear?"WARN":"OK"}</div></div>
+          {/* ── RIGHT PANEL ── */}
+          <aside className="panel-right">
+            <div className="slbl" style={{paddingTop:14}}>Telemetry &amp; Status</div>
+            <div style={{padding:"0 12px"}}>
+              <div className="tgrid">
+                <div className="tcell"><div className="tlbl">Status</div><div className={`tval ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"LIVE":"OFF"}</div></div>
+                <div className="tcell"><div className="tlbl">Pub Hz</div><div className="tval">{hz}</div></div>
+                <div className="tcell"><div className="tlbl">Max Err</div><div className={`tval ${maxErr>5?"warn":"ok"}`}>{maxErr.toFixed(1)}°</div></div>
+                <div className="tcell"><div className="tlbl">Limits</div><div className={`tval ${anyNear?"warn":"ok"}`}>{anyNear?"WARN":"OK"}</div></div>
+              </div>
             </div>
 
-            <div className="slbl">Joint Tracking</div>
+            <div className="slbl" style={{marginTop:10}}>Feedback vs CMD</div>
             <div>
               {JOINTS.map(j=>{
-                const err=Math.abs((joints[j.id]||0)-(feed[j.id]||0));
+                const cmd=joints[j.id]??0, fb=feed[j.id]??0, err=Math.abs(cmd-fb);
                 return(
-                  <div className="jtrow" key={j.id}>
-                    <span className="jtname">{j.short}</span>
-                    <span className="jtdelta" style={{color:deltaColor(err)}}>Δ{err.toFixed(1)}{j.unit}</span>
+                  <div className="fbrow" key={j.id}>
+                    <div className="fbtop">
+                      <span style={{fontSize:10,color:"var(--mid)",fontWeight:600}}>{j.short}</span>
+                      <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:deltaColor(err),fontWeight:700}}>Δ{err.toFixed(1)}{j.unit}</span>
+                    </div>
+                    <div className="fbbot">
+                      <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:j.color}}>CMD {cmd.toFixed(1)}{j.unit}</span>
+                      <span style={{fontFamily:"JetBrains Mono",fontSize:9,color:"var(--hi)"}}>FB {fb.toFixed(1)}{j.unit}</span>
+                    </div>
+                    <div className="fbbar-track"><div className="fbbar-fill" style={{width:`${deltaPct(err)}%`,background:deltaColor(err)}}/></div>
                   </div>
                 );
               })}
             </div>
 
-            <Accordion title="ROS Diagnostics" tag="advanced" defaultOpen={false}>
-              <div className="diag-block">
-                <div className="diag-block-title">System Status</div>
-                <div className="tgrid2" style={{margin:0}}>
-                  <div className="tcell"><div className="tlbl">Bridge</div><div className={`tval ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"ONLINE":"OFFLINE"}</div></div>
-                  <div className="tcell"><div className="tlbl">Pub Hz</div><div className="tval">{hz}</div></div>
-                  <div className="tcell"><div className="tlbl">ROS Nodes</div><div className="tval ok">{diag.info.nodes.length||"–"}</div></div>
-                  <div className="tcell"><div className="tlbl">/joint_states</div><div className={`tval ${diag.tlog["/joint_states"].hz>0?"ok":"warn"}`}>{diag.tlog["/joint_states"].hz} Hz</div></div>
-                </div>
-              </div>
-
-              <div className="diag-block">
-                <div className="diag-block-title">Repeatability Test</div>
-                <div className="rt-row">
-                  <select className="rt-select" value={testTarget} onChange={e=>setTestTarget(e.target.value)} disabled={testRunning}>
-                    {presets.filter(p=>p.name!=="Home").map(p=><option key={p.name} value={p.name}>{p.name}</option>)}
-                  </select>
-                  {!testRunning
-                    ? <button className="rt-btn" onClick={()=>runRepeatabilityTest(testPreset,10)} disabled={conn!=="connected"||!armPower}>RUN ×10</button>
-                    : <button className="rt-btn stop" onClick={stopTest}>STOP</button>}
-                </div>
-                <div className="rt-chart-wrap">
-                  {testResults.length===0 && !testRunning ? <div className="rt-empty">No results yet</div> : <TrendChart results={testResults}/>}
-                </div>
-                {testResults.length>0 && (
-                  <div className="rt-summary">
-                    <span>Avg <b>{testAvg.toFixed(2)}°</b></span>
-                    <span>Max <b>{testMax.toFixed(2)}°</b></span>
-                    <button className="rt-csv" onClick={exportTestCSV}>CSV</button>
-                  </div>
-                )}
-              </div>
-
-              <div className="diag-block">
-                <div className="diag-block-title">Topic Bus</div>
-                {diag.TRACKED.map(t=>(
-                  <div className="topic-row" key={t}><span className="topic-name">{t}</span>
-                    <span className="topic-hz">{diag.tlog[t].count} · {diag.tlog[t].hz}Hz</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="diag-block">
-                <div className="diag-block-title">ROS2 Nodes ({diag.info.nodes.length})</div>
-                <div style={{maxHeight:110,overflowY:"auto"}}>
-                  {diag.info.nodes.length===0
-                    ? <div style={{fontFamily:"JetBrains Mono",fontSize:10,color:"var(--lo)"}}>{mode==="mock"?"Simulation mode":"No nodes yet"}</div>
-                    : diag.info.nodes.map(n=><div className="node-row" key={n}>▸ {n}</div>)}
-                </div>
-              </div>
-
-              <div className="diag-block">
-                <div className="diag-block-title">Remote Control Link</div>
-                <div className="remote-status-row">
-                  <div className={`remote-dot ${remoteStatus}`}/>
-                  <span style={{fontFamily:"JetBrains Mono",fontSize:10,color:"var(--lo)"}}>{remoteBrokerUrl}</span>
-                </div>
-                <div className="remote-addr-row">
-                  <input className="remote-addr-input" value={stripProto(remoteBrokerUrl)} onChange={e=>setRemoteBrokerUrl(e.target.value)} spellCheck={false}/>
-                  {!remoteIpLinked && <button className="remote-reset" onClick={resetRemoteToRobotIp}>Use ROS IP</button>}
-                </div>
-                <div className="remote-note">Auto-follows the rosbridge host by default (port 9001). Override only if the remote reaches the Pi via a different address than your browser does.</div>
-              </div>
-            </Accordion>
+            <div style={{marginTop:"auto"}}>
+              <div className="slbl" style={{borderTop:"1px solid var(--b0)"}}>2D Fallback View</div>
+              <ArmViz joints={armPower?joints:feed}/>
+            </div>
           </aside>
 
-          <div className="panel-bot">
-            <div className="panel-bot-jog">
-              <div className="panel-bot-jog-title">Cartesian Jog</div>
-              <div className="jog-axes-row">
-                {[
-                  {axis:"X",label:"Base",     color:"#00D4FF",id:"joint_1",dir:["←","→"]},
-                  {axis:"Y",label:"Shoulder", color:"#00FF9D",id:"joint_2",dir:["↓","↑"]},
-                  {axis:"Z",label:"Elbow",    color:"#FFB800",id:"joint_3",dir:["←","→"]},
-                ].map(({axis,label,color,id,dir})=>(
-                  <div className="jog-axis-col" key={axis}>
-                    <div className="jog-axis-lbl"><div className="axdot" style={{background:color}}/>{axis} {label}</div>
-                    <div className="jog-row">
-                      <JBtn speed={speed} onClick={()=>stepJ(id,-JOG_DEG[speed])} disabled={dis}>{dir[0]} {axis}−</JBtn>
-                      <JBtn speed={speed} onClick={()=>stepJ(id,JOG_DEG[speed])} disabled={dis}>{dir[1]} {axis}+</JBtn>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="panel-bot-log">
-              <div className="panel-bot-log-hdr">
-                <span className="panel-bot-log-title">System Log — {logs.length} entries</span>
+          {/* ── BOTTOM PANEL ── */}
+          <section className="panel-bottom">
+            {/* Log Column */}
+            <div className="bot-col log-col">
+              <div className="plbl" style={{borderBottom:"none"}}>System Log
                 <div style={{display:"flex",gap:6}}>
-                  <button className="clearbtn" onClick={exportSystemLogCSV}>Export</button>
-                  <button className="clearbtn" onClick={()=>setLogs([])}>Clear</button>
+                  <button className="rt-csv" onClick={exportSystemLogCSV}>Export</button>
+                  <button className="rt-csv" onClick={()=>setLogs([])}>Clear</button>
                 </div>
               </div>
-              <div className="panel-bot-log-list">
-                {logs.length===0 && <div className="lent"><span className="ltm">{ts()}</span><span className="lmsg">Waiting for activity…</span></div>}
+              <div className="logwrap">
+                {logs.length===0&&<div className="lent"><span className="ltm">{ts()}</span><span className="lmsg">Waiting for connection…</span></div>}
                 {logs.map((l,i)=><div className="lent" key={i}><span className="ltm">{l.time}</span><span className={`lmsg ${l.type}`}>{l.msg}</span></div>)}
               </div>
             </div>
-          </div>
+
+            {/* Diagnostics Column */}
+            <div className="bot-col diag-col" style={{borderLeft:"1px solid var(--b0)"}}>
+              <div className="plbl" style={{borderBottom:"none"}}>ROS2 Diagnostics</div>
+              <div className="dkpi-grid">
+                <div className="dkpi"><div className="dkpi-lbl">Bridge</div><div className={`dkpi-val ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"ONLINE":"OFFLINE"}</div></div>
+                <div className="dkpi"><div className="dkpi-lbl">Nodes</div><div className="dkpi-val ok">{diag.info.nodes.length||"–"}</div></div>
+                {diag.TRACKED.map(t=>(
+                  <div className="dkpi" key={t}><div className="dkpi-lbl" style={{textTransform:"none"}}>{t}</div><div className={`dkpi-val ${diag.tlog[t].hz>0?"ok":"warn"}`}>{diag.tlog[t].hz} Hz</div></div>
+                ))}
+              </div>
+              <div style={{flex:1,overflowY:"auto",borderTop:"1px solid var(--b0)"}}>
+                {diag.TRACKED.map(t=>(
+                  <div className="topic-row" key={t}><span className="topic-name">{t}</span><span className="topic-hz">{diag.tlog[t].count} msgs</span></div>
+                ))}
+              </div>
+            </div>
+
+            {/* Test Column */}
+            <div className="bot-col test-col" style={{borderLeft:"1px solid var(--b0)"}}>
+              <div className="plbl" style={{borderBottom:"none"}}>Repeatability Test</div>
+              <div className="rt-row">
+                <select className="rt-select" value={testTarget} onChange={e=>setTestTarget(e.target.value)} disabled={testRunning}>
+                  {presets.filter(p=>p.name!=="Home").map(p=><option key={p.name} value={p.name}>{p.name}</option>)}
+                </select>
+                {!testRunning
+                  ? <button className="rt-btn" onClick={()=>runRepeatabilityTest(testPreset,10)} disabled={conn!=="connected"||!armPower}>RUN ×10</button>
+                  : <button className="rt-btn stop" onClick={stopTest}>STOP</button>}
+              </div>
+              <div className="rt-chart-wrap">
+                {testResults.length===0 && !testRunning ? <div className="rt-empty">No results yet</div> : <TrendChart results={testResults}/>}
+              </div>
+              {testResults.length>0 && (
+                <div className="rt-summary">
+                  <span>Avg <b>{testAvg.toFixed(2)}°</b></span>
+                  <span>Max <b>{testMax.toFixed(2)}°</b></span>
+                  <button className="rt-csv" onClick={exportTestCSV}>CSV</button>
+                </div>
+              )}
+            </div>
+          </section>
+
         </div>
+
+        {/* ── STATUS STRIP ── */}
+        <div className="strip">
+          <div className={`sdot ${conn==="connected"?"ok":conn==="connecting"?"warn":"err"}`}/>
+          <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
+          <span style={{color:"var(--lo)"}}>·</span>
+          <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT · {ts()}</span>
+        </div>
+
       </div>
     </>
   );
