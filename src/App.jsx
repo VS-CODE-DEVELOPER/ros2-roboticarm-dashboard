@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import mqtt from "mqtt";
+import mqtt from "mqtt/dist/mqtt.min";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
