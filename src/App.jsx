@@ -298,10 +298,10 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .lmsg.warn{color:var(--amb)}
 .lmsg.error{color:var(--red)}
 
-.dkpi-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0);flex-shrink:0}
-.dkpi{background:var(--card);padding:8px 12px;display:flex;flex-direction:column}
-.dkpi-lbl{font-size:8px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:3px}
-.dkpi-val{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--hi)}
+.dkpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--b0);flex-shrink:0}
+.dkpi{background:var(--card);padding:5px 6px;display:flex;flex-direction:column;min-width:0}
+.dkpi-lbl{font-size:6.5px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.06em;text-transform:uppercase;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dkpi-val{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;color:var(--hi);white-space:nowrap}
 .dkpi-val.ok{color:var(--grn)}
 .dkpi-val.warn{color:var(--amb)}
 .dkpi-val.err{color:var(--red)}
