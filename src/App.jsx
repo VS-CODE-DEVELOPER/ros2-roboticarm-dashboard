@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, Component } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import mqtt from "mqtt";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -298,10 +298,10 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .lmsg.warn{color:var(--amb)}
 .lmsg.error{color:var(--red)}
 
-.dkpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--b0);flex-shrink:0}
-.dkpi{background:var(--card);padding:5px 6px;display:flex;flex-direction:column;min-width:0}
-.dkpi-lbl{font-size:6.5px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.06em;text-transform:uppercase;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dkpi-val{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;color:var(--hi);white-space:nowrap}
+.dkpi-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0);flex-shrink:0}
+.dkpi{background:var(--card);padding:8px 12px;display:flex;flex-direction:column}
+.dkpi-lbl{font-size:8px;font-family:'JetBrains Mono',monospace;color:var(--lo);letter-spacing:.1em;text-transform:uppercase;margin-bottom:3px}
+.dkpi-val{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--hi)}
 .dkpi-val.ok{color:var(--grn)}
 .dkpi-val.warn{color:var(--amb)}
 .dkpi-val.err{color:var(--red)}
@@ -504,36 +504,7 @@ function useDiagnostics(rosConnected, rosInstance){
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
-// ─── Error Boundary — the permanent fix for "renders then goes blank".
-//     Without this, ANY uncaught error anywhere in the tree (a bad mqtt
-//     bundle, a broken import, a bug in a future feature) unmounts the
-//     entire app silently. This catches it and shows what actually broke. ──
-class DashboardErrorBoundary extends Component {
-  constructor(props) { super(props); this.state = { error: null }; }
-  static getDerivedStateFromError(error) { return { error }; }
-  componentDidCatch(error, info) { console.error("Dashboard crashed:", error, info); }
-  render() {
-    if (this.state.error) {
-      return (
-        <div style={{position:"fixed",inset:0,background:"#080C10",color:"#E6EDF3",fontFamily:"JetBrains Mono, monospace",padding:24,overflow:"auto"}}>
-          <div style={{color:"#FF3B3B",fontWeight:700,fontSize:14,marginBottom:12}}>⚠ DASHBOARD CRASHED</div>
-          <div style={{fontSize:12,color:"#8B949E",marginBottom:16,lineHeight:1.6}}>
-            An uncaught error stopped the app instead of just failing quietly. Most likely causes: the <b>mqtt</b> package needs Node polyfills to run in the browser (Vite doesn't add these automatically), or a mixed-content block (this page is HTTPS but is trying to reach ws:// or http:// targets — that only works when the dashboard itself is served over plain HTTP, e.g. from the Pi).
-          </div>
-          <pre style={{fontSize:11,color:"#FFB800",whiteSpace:"pre-wrap",background:"#111820",padding:12,borderRadius:8,border:"1px solid #1E2D3D"}}>{String(this.state.error?.stack || this.state.error)}</pre>
-          <button onClick={()=>this.setState({error:null})} style={{marginTop:16,padding:"8px 16px",background:"#0D1117",border:"1px solid #253545",color:"#E6EDF3",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:11}}>Try Again</button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
 export default function App(){
-  return <DashboardErrorBoundary><AppInner/></DashboardErrorBoundary>;
-}
-
-function AppInner(){
   const [conn,setConn]   = useState("disconnected");
   const [estp,setEstp]   = useState(false);
   const [joints,setJ]    = useState(initJ());
@@ -859,60 +830,46 @@ function AppInner(){
 
   useEffect(()=>{ disRef.current=dis; },[dis]);
 
-  // MQTT Connection Logic — wrapped defensively: a broken mqtt bundle,
-  // bad broker address, or connection failure must never crash the whole
-  // dashboard. Without this, React unmounts the entire tree on any
-  // uncaught error thrown inside an effect (exactly the "flickers then
-  // goes blank" symptom).
+  // MQTT Connection Logic
   useEffect(() => {
-    let client = null;
-    try {
-      setRemoteStatus("connecting");
-      client = mqtt.connect(remoteBrokerUrl);
-      client.on("connect", () => {
-        setRemoteStatus("linked");
-        client.subscribe("remote/data");
-        log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
-      });
-      client.on("reconnect", () => setRemoteStatus("connecting"));
-      client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
-      client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
-      client.on("message", (topic, message) => {
-        if (topic !== "remote/data" || estRef.current || disRef.current) return;
-        const now = Date.now();
-        if (now - lastRemoteCmd.current < 40) return;
-        lastRemoteCmd.current = now;
-        try {
-          const data = JSON.parse(message.toString());
-          const jogAmount = JOG_DEG[speedRef.current];
-          const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
-          let moved = null;
-          if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
-          if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
-          if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
-          if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
-          if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
-          if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
-          if (moved) {
-            setRemoteActive(true); setRemoteActiveJoint(moved);
-            clearTimeout(remoteActiveTimeout.current);
-            remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
-          }
-        } catch (e) { console.error("MQTT parsing error", e); }
-      });
-    } catch (e) {
-      setRemoteStatus("error");
-      log(`Remote link failed to initialize: ${e?.message ?? e}`,"error");
-      console.error("mqtt.connect() threw — check that the mqtt package is bundled correctly for the browser", e);
-    }
-    return () => {
-      clearTimeout(remoteActiveTimeout.current);
-      try { client && client.end(true); } catch (e) { /* already dead, ignore */ }
-    };
+    setRemoteStatus("connecting");
+    const client = mqtt.connect(remoteBrokerUrl);
+    client.on("connect", () => {
+      setRemoteStatus("linked");
+      client.subscribe("remote/data");
+      log(`Hardware remote linked (${remoteBrokerUrl})`,"success");
+    });
+    client.on("reconnect", () => setRemoteStatus("connecting"));
+    client.on("close", () => setRemoteStatus(prev => prev==="error" ? prev : "offline"));
+    client.on("error", (e) => { setRemoteStatus("error"); log(`Remote link error: ${e?.message ?? e}`,"error"); });
+    client.on("message", (topic, message) => {
+      if (topic !== "remote/data" || estRef.current || disRef.current) return;
+      const now = Date.now();
+      if (now - lastRemoteCmd.current < 40) return; 
+      lastRemoteCmd.current = now;
+      try {
+        const data = JSON.parse(message.toString());
+        const jogAmount = JOG_DEG[speedRef.current];
+        const DEADZONE_LOW = 1700, DEADZONE_HIGH = 2400;
+        let moved = null;
+        if (data.joyX < DEADZONE_LOW)  { stepJ("joint_1", -jogAmount); moved="joint_1"; }
+        if (data.joyX > DEADZONE_HIGH) { stepJ("joint_1",  jogAmount); moved="joint_1"; }
+        if (data.joyY < DEADZONE_LOW)  { stepJ("joint_2", -jogAmount); moved="joint_2"; }
+        if (data.joyY > DEADZONE_HIGH) { stepJ("joint_2",  jogAmount); moved="joint_2"; }
+        if (data.btn1 === 0) { stepJ("joint_6",  5); moved="joint_6"; }
+        if (data.btn2 === 0) { stepJ("joint_6", -5); moved="joint_6"; }
+        if (moved) {
+          setRemoteActive(true); setRemoteActiveJoint(moved);
+          clearTimeout(remoteActiveTimeout.current);
+          remoteActiveTimeout.current = setTimeout(()=>{ setRemoteActive(false); setRemoteActiveJoint(null); }, 300);
+        }
+      } catch (e) { console.error("MQTT parsing error", e); }
+    });
+    return () => { clearTimeout(remoteActiveTimeout.current); client.end(true); };
   }, [stepJ, remoteBrokerUrl, log]);
 
   // Foxglove URL Routing
-  const host = hostOf(url); // derived from the rosbridge field, not window.location — correct regardless of where this dashboard itself is hosted
+  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
   const fgTarget = `ws://${host}:8765`;
   const fgUrl = `http://${host}/ui/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
   const activeInputLabel = remoteActive ? `REMOTE (${remoteActiveJoint})` : "WEB UI";
@@ -1132,26 +1089,19 @@ function AppInner(){
             {/* Diagnostics Column */}
             <div className="bot-col diag-col" style={{borderLeft:"1px solid var(--b0)"}}>
               <div className="plbl" style={{borderBottom:"none"}}>ROS2 Diagnostics</div>
-
-              {/* System Status + Topics scroll together, bounded — Remote
-                  Config below is never pushed off no matter how much
-                  content is here (more nodes/topics later, etc). */}
-              <div style={{maxHeight:110, overflowY:"auto", flexShrink:0}}>
-                <div className="dkpi-grid">
-                  <div className="dkpi"><div className="dkpi-lbl">Bridge</div><div className={`dkpi-val ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"ONLINE":"OFFLINE"}</div></div>
-                  <div className="dkpi"><div className="dkpi-lbl">Nodes</div><div className="dkpi-val ok">{diag.info.nodes.length||"–"}</div></div>
-                  {diag.TRACKED.map(t=>(
-                    <div className="dkpi" key={t}><div className="dkpi-lbl" style={{textTransform:"none"}}>{t}</div><div className={`dkpi-val ${diag.tlog[t].hz>0?"ok":"warn"}`}>{diag.tlog[t].hz} Hz</div></div>
-                  ))}
-                </div>
-                <div style={{borderTop:"1px solid var(--b0)"}}>
-                  {diag.TRACKED.map(t=>(
-                    <div className="topic-row" key={t}><span className="topic-name">{t}</span><span className="topic-hz">{diag.tlog[t].count} msgs</span></div>
-                  ))}
-                </div>
+              <div className="dkpi-grid">
+                <div className="dkpi"><div className="dkpi-lbl">Bridge</div><div className={`dkpi-val ${conn==="connected"?"ok":"err"}`}>{conn==="connected"?"ONLINE":"OFFLINE"}</div></div>
+                <div className="dkpi"><div className="dkpi-lbl">Nodes</div><div className="dkpi-val ok">{diag.info.nodes.length||"–"}</div></div>
+                {diag.TRACKED.map(t=>(
+                  <div className="dkpi" key={t}><div className="dkpi-lbl" style={{textTransform:"none"}}>{t}</div><div className={`dkpi-val ${diag.tlog[t].hz>0?"ok":"warn"}`}>{diag.tlog[t].hz} Hz</div></div>
+                ))}
               </div>
-
-              <div className="remote-block" style={{flexShrink:0, borderTop:"1px solid var(--b0)"}}>
+              <div style={{flex:1,overflowY:"auto",borderTop:"1px solid var(--b0)"}}>
+                {diag.TRACKED.map(t=>(
+                  <div className="topic-row" key={t}><span className="topic-name">{t}</span><span className="topic-hz">{diag.tlog[t].count} msgs</span></div>
+                ))}
+              </div>
+              <div className="remote-block">
                 <div className="remote-block-title">Hardware Remote Configuration</div>
                 <div className="remote-addr-row">
                   <input className="remote-addr-input" value={stripProto(remoteBrokerUrl)} onChange={e=>setRemoteBrokerUrl(e.target.value)} spellCheck={false}/>
