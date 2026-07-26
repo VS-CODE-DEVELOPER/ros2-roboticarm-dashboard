@@ -792,10 +792,11 @@ export default function App(){
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
-  // Foxglove URL Routing
-  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
-  const fgTarget = `ws://${host}:8765`;
-  const fgUrl = `http://${host}:8080/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
+  // Foxglove URL Routing — follows whatever machine is entered in the WS field,
+  // so Foxglove always points at the same robot the dashboard is connected to.
+  const robotHost = stripProto(url).split(":")[0] || (typeof window !== "undefined" ? window.location.hostname : "localhost");
+  const fgTarget = `ws://${robotHost}:8765`;
+  const fgUrl = `http://${robotHost}:8080/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
 
   return(
     <>
