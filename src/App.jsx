@@ -263,12 +263,12 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .abtn:disabled{opacity:.3;cursor:not-allowed}
 
 /* ── Center (Foxglove) ── */
-.fg-bar{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:rgba(13,17,23,0.85);backdrop-filter:blur(5px);border-bottom:1px solid var(--b0);z-index:10}
+.fg-bar{display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:rgba(13,17,23,0.85);border-bottom:1px solid var(--b0);flex-shrink:0}
 .fg-tag{font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--purple);display:flex;align-items:center;gap:8px}
 .fg-tag-dot{width:6px;height:6px;background:var(--purple);border-radius:50%;box-shadow:0 0 6px var(--purple)}
 .fg-link{font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--hi);text-decoration:none;padding:4px 10px;border:1px solid var(--b1);border-radius:5px;background:var(--card)}
 .fg-link:hover{border-color:var(--cyan);color:var(--cyan)}
-.fg-frame{width:100%;height:100%;border:none;background:#000}
+.fg-frame{width:100%;flex:1;border:none;background:#000;min-height:0}
 
 /* ── Right Panel ── */
 .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--b0)}
@@ -794,9 +794,12 @@ export default function App(){
 
   // Foxglove URL Routing — follows whatever machine is entered in the WS field,
   // so Foxglove always points at the same robot the dashboard is connected to.
+  // Builds the ds= query params directly rather than relying on the container's
+  // /ui auto-redirect, since Foxglove's browser-cached "recent data sources"
+  // can silently override the DS_TYPE/DS_PORT env vars on that path.
   const robotHost = stripProto(url).split(":")[0] || (typeof window !== "undefined" ? window.location.hostname : "localhost");
-  const fgTarget = `ws://${robotHost}:8765`;
-  const fgUrl = `http://${robotHost}:8080/?ds=foxglove-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
+  const fgTarget = url && url.startsWith("ws") ? url : `ws://${robotHost}:9090`;
+  const fgUrl = `http://${robotHost}:8080/?ds=rosbridge-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
 
   return(
     <>
