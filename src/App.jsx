@@ -525,6 +525,7 @@ export default function App(){
   const testCancelRef = useRef(false);
 
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
+  const saveTrajRef=useRef(null), clearTrajRef=useRef(null), savePresetRef=useRef(null), deletePresetRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
@@ -600,6 +601,13 @@ export default function App(){
         // on-screen switch, or the physical remote via the MQTT bridge.
         if(typeof msg.data==="boolean") setArmPower(msg.data);
       });
+      // Unified store topics — same bridge the remote talks to via MQTT,
+      // so trajectory points and presets saved from either side land in
+      // one shared file on the Pi instead of two disconnected systems.
+      saveTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/save_trajectory_point",messageType:"std_msgs/Empty"});
+      clearTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/clear_trajectory",messageType:"std_msgs/Empty"});
+      savePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/save_preset",messageType:"std_msgs/String"});
+      deletePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_preset",messageType:"std_msgs/String"});
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
           const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI;});
@@ -686,20 +694,67 @@ export default function App(){
     run:()=>{ setJ(initJ()); log("All joints → 0°","info"); },
   });
 
+  // Tiny CSV parser — no library needed for this simple, quoted-value-free shape
+  const parseCSV=(text)=>{
+    const lines=text.trim().split("\n");
+    if(lines.length<2) return [];
+    const headers=lines[0].split(",");
+    return lines.slice(1).map(line=>{
+      const cells=line.split(",");
+      const row={};
+      headers.forEach((h,i)=>{ row[h]=cells[i]; });
+      return row;
+    });
+  };
+
+  const refreshTrajectoryFromServer=useCallback(async()=>{
+    try{
+      const res=await fetch("/data/trajectory.csv",{cache:"no-store"});
+      if(!res.ok){ setWaypoints([]); return; }
+      const rows=parseCSV(await res.text());
+      const jointCols=rows.length ? Object.keys(rows[0]).filter(k=>k!=="order"&&k!=="timestamp_utc") : [];
+      setWaypoints(rows.map(r=>({
+        id:r.order, label:`Point ${r.order}`,
+        values:Object.fromEntries(jointCols.map(j=>[j,parseFloat(r[j])])),
+      })));
+    }catch{ /* file not there yet — normal until first save */ }
+  },[]);
+
+  const refreshPresetsFromServer=useCallback(async()=>{
+    try{
+      const res=await fetch("/data/presets.csv",{cache:"no-store"});
+      if(!res.ok){ setPresets(DEFAULT_PRESETS); return; }
+      const rows=parseCSV(await res.text());
+      const jointCols=rows.length ? Object.keys(rows[0]).filter(k=>k!=="name"&&k!=="timestamp_utc") : [];
+      const serverPresets=rows.map(r=>({
+        name:r.name, icon:"★", builtin:false,
+        values:Object.fromEntries(jointCols.map(j=>[j,parseFloat(r[j])])),
+      }));
+      // Server presets are the shared truth; built-in defaults stay available
+      // as a fallback until Home/Grab Ready/Stow have been saved for real.
+      const names=new Set(serverPresets.map(p=>p.name));
+      setPresets([...DEFAULT_PRESETS.filter(p=>!names.has(p.name)), ...serverPresets]);
+    }catch{ /* file not there yet */ }
+  },[]);
+
+  useEffect(()=>{ refreshTrajectoryFromServer(); refreshPresetsFromServer(); },[refreshTrajectoryFromServer,refreshPresetsFromServer]);
+
   const addPreset=()=>{
     const name = window.prompt("Name this position:");
     if(!name || !name.trim()) return;
     const trimmed = name.trim();
     if(presets.some(p=>p.name.toLowerCase()===trimmed.toLowerCase())){ log("Name exists","warn"); return; }
-    setPresets(p=>[...p, { name:trimmed, icon:"★", values:{...joints}, builtin:false }]);
-    log(`Saved "${trimmed}"`,"success");
+    if(savePresetRef.current) savePresetRef.current.publish(new ROSLIB.Message({data:trimmed}));
+    log(`Saving "${trimmed}"…`,"info");
+    setTimeout(refreshPresetsFromServer,500);
   };
   const deletePreset=(name)=>confirmOrRun({
     title:`Delete "${name}"?`, body:"Cannot be undone.", confirmLabel:"Delete", danger:true,
     run:()=>{
-      setPresets(p=>p.filter(x=>x.name!==name));
+      if(deletePresetRef.current) deletePresetRef.current.publish(new ROSLIB.Message({data:name}));
       if(testTarget===name) setTestTarget(presets.find(p=>p.builtin&&p.name!=="Home")?.name || "Grab Ready");
-      log(`Deleted "${name}"`,"warn");
+      log(`Deleting "${name}"…`,"warn");
+      setTimeout(refreshPresetsFromServer,500);
     },
   });
 
@@ -716,14 +771,17 @@ export default function App(){
   });
 
   const recordWaypoint=()=>{
-    const snapshot={...feedRef.current};
-    setWaypoints(p=>[...p,{id:Date.now(),values:snapshot,label:`Point ${p.length+1}`}]);
-    log(`Recorded Point ${waypoints.length+1}`,"success");
+    if(saveTrajRef.current) saveTrajRef.current.publish(new ROSLIB.Message({}));
+    log(`Saving point…`,"info");
+    setTimeout(refreshTrajectoryFromServer,500);
   };
-  const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id));
+  const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id)); // local-only trim of the displayed list; full clear goes through the server
   const clearWaypoints=()=>confirmOrRun({
     title:"Clear trajectory?", body:"Cannot be undone.", confirmLabel:"Clear", danger:true,
-    run:()=>{ setWaypoints([]); log("Trajectory cleared","warn"); },
+    run:()=>{
+      if(clearTrajRef.current) clearTrajRef.current.publish(new ROSLIB.Message({}));
+      setWaypoints([]); log("Trajectory cleared","warn");
+    },
   });
   const stopPlayback=()=>{ playCancelRef.current=true; };
   const playTrajectory=()=>{
