@@ -243,6 +243,7 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .wp-empty{padding:20px 12px;text-align:center;font-size:10px;color:var(--lo)}
 
 .play-row{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--b0);flex-shrink:0}
+.remote-saves-note{font-size:10px;color:var(--lo);line-height:1.5;padding:0 12px 8px}
 .pbtn2{flex:1;padding:8px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.05em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
 .pbtn2.primary{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .pbtn2.danger{border-color:var(--red);color:var(--red);background:var(--rdim)}
@@ -594,6 +595,11 @@ export default function App(){
       pubRef.current=new ROSLIB.Topic({ros,name:"/joint_commands",messageType:"sensor_msgs/JointState"});
       subRef.current=new ROSLIB.Topic({ros,name:"/joint_states",  messageType:"sensor_msgs/JointState"});
       powerRef.current=new ROSLIB.Topic({ros,name:"/arm_power_state",messageType:"std_msgs/Bool"});
+      powerRef.current.subscribe(msg=>{
+        // Keeps the toggle accurate no matter who changed power — the
+        // on-screen switch, or the physical remote via the MQTT bridge.
+        if(typeof msg.data==="boolean") setArmPower(msg.data);
+      });
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
           const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI;});
@@ -936,6 +942,13 @@ export default function App(){
                     <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
                     <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
                   </div>
+                  <div className="plbl">Remote-Saved Positions</div>
+                  <div className="remote-saves-note">
+                    Points saved from the physical remote's SAVE button live in a separate CSV file on the Pi — not in this browser session, so they survive a page reload. Numbered automatically (Remote Save 1, 2, ...); rename or organize them here after downloading.
+                  </div>
+                  <a className="pbtn2" href="/data/waypoints.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none"}}>
+                    ⬇ DOWNLOAD REMOTE SAVES (CSV)
+                  </a>
                   <div className="plbl">Saved Positions</div>
                   <div className="pgrid">
                     {presets.map(p=>(
