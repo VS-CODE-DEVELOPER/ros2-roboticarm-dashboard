@@ -1000,14 +1000,16 @@ export default function App(){
                     <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
                     <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
                   </div>
-                  <div className="plbl">Remote-Saved Positions</div>
                   <div className="remote-saves-note">
-                    Points saved from the physical remote's SAVE button live in a separate CSV file on the Pi — not in this browser session, so they survive a page reload. Numbered automatically (Remote Save 1, 2, ...); rename or organize them here after downloading.
+                    Trajectory points above are shared with the physical remote — saved from either side, both show up here and persist across reloads. This link is a raw export/backup of the same file.
                   </div>
-                  <a className="pbtn2" href="/data/waypoints.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none"}}>
-                    ⬇ DOWNLOAD REMOTE SAVES (CSV)
+                  <a className="pbtn2" href="/data/trajectory.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none"}}>
+                    ⬇ EXPORT TRAJECTORY (CSV)
                   </a>
                   <div className="plbl">Saved Positions</div>
+                  <a className="pbtn2" href="/data/presets.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none",marginBottom:8}}>
+                    ⬇ EXPORT PRESETS (CSV)
+                  </a>
                   <div className="pgrid">
                     {presets.map(p=>(
                       <button key={p.name} className="pbtn" onClick={()=>requestPreset(p)} disabled={dis}>
