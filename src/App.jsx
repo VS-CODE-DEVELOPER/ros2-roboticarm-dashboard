@@ -92,7 +92,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden;background:var(--bg);colo
   grid-template-areas:
     "left center right"
     "left bottom right";
-  background:var(--b0); /* Creates instant 1px borders between panels */
+  background:var(--b0);
   gap:1px;
   overflow:hidden;
   width:100%;
@@ -243,7 +243,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .wp-empty{padding:20px 12px;text-align:center;font-size:10px;color:var(--lo)}
 
 .play-row{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--b0);flex-shrink:0}
-.remote-saves-note{font-size:10px;color:var(--lo);line-height:1.5;padding:0 12px 8px}
 .pbtn2{flex:1;padding:8px;border-radius:var(--r);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.05em;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
 .pbtn2.primary{border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .pbtn2.danger{border-color:var(--red);color:var(--red);background:var(--rdim)}
@@ -338,7 +337,6 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 @keyframes ep{from{opacity:.5}to{opacity:1}}
 .estop-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--red);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 24px;border-radius:0 0 8px 8px;z-index:1000}
 .demo-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--purple);color:#0D1117;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;padding:4px 18px;border-radius:0 0 6px 6px;z-index:998}
-.priority-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--amb);color:#0D1117;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;padding:4px 18px;border-radius:0 0 6px 6px;z-index:997}
 
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:2000}
 .modal{background:var(--panel);border:1px solid var(--b0);border-radius:var(--rl);padding:20px;width:320px}
@@ -526,9 +524,6 @@ export default function App(){
   const testCancelRef = useRef(false);
 
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
-  const saveTrajRef=useRef(null), clearTrajRef=useRef(null), savePresetRef=useRef(null), deletePresetRef=useRef(null);
-  const estopPubRef=useRef(null), priorityRef=useRef(null);
-  const [remoteHasPriority,setRemoteHasPriority]=useState(false);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
@@ -599,35 +594,6 @@ export default function App(){
       pubRef.current=new ROSLIB.Topic({ros,name:"/joint_commands",messageType:"sensor_msgs/JointState"});
       subRef.current=new ROSLIB.Topic({ros,name:"/joint_states",  messageType:"sensor_msgs/JointState"});
       powerRef.current=new ROSLIB.Topic({ros,name:"/arm_power_state",messageType:"std_msgs/Bool"});
-      powerRef.current.subscribe(msg=>{
-        // Keeps the toggle accurate no matter who changed power — the
-        // on-screen switch, or the physical remote via the MQTT bridge.
-        if(typeof msg.data==="boolean") setArmPower(msg.data);
-      });
-      // Unified store topics — same bridge the remote talks to via MQTT,
-      // so trajectory points and presets saved from either side land in
-      // one shared file on the Pi instead of two disconnected systems.
-      saveTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/save_trajectory_point",messageType:"std_msgs/Empty"});
-      clearTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/clear_trajectory",messageType:"std_msgs/Empty"});
-      savePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/save_preset",messageType:"std_msgs/String"});
-      deletePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_preset",messageType:"std_msgs/String"});
-      // E-Stop is now genuinely two-way — was purely local browser state
-      // before, invisible to the remote or the bridge entirely.
-      estopPubRef.current=new ROSLIB.Topic({ros,name:"/estop",messageType:"std_msgs/Bool"});
-      estopPubRef.current.subscribe(msg=>{
-        if(typeof msg.data==="boolean") setEstp(msg.data);
-      });
-      // Prevention-based arbitration: while the remote's DEADMAN is held,
-      // the bridge publishes this true, and the website steps back from
-      // jog controls instead of racing the remote to publish conflicting
-      // commands to /joint_commands.
-      priorityRef.current=new ROSLIB.Topic({ros,name:"/webui/remote_priority",messageType:"std_msgs/Bool"});
-      priorityRef.current.subscribe(msg=>{
-        if(typeof msg.data==="boolean"){
-          log(`[DEBUG] remote_priority received: ${msg.data}`,"info");
-          setRemoteHasPriority(msg.data);
-        }
-      });
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
           const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI;});
@@ -670,15 +636,11 @@ export default function App(){
   const handleEstop=useCallback(()=>{
     setEstp(true); log("⚠ EMERGENCY STOP ACTIVATED","error");
     dispatchCommand("ESTOP", {joints});
-    if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:true}));
   },[joints,log,dispatchCommand]);
 
   const handleResume=()=>setConfirmAction({
     title:"Resume motion?", body:"Clears emergency stop.", confirmLabel:"Resume", danger:false,
-    run:()=>{
-      setEstp(false); log("Emergency stop cleared","success");
-      if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:false}));
-    },
+    run:()=>{ setEstp(false); log("Emergency stop cleared","success"); },
   });
 
   const confirmOrRun=(opts)=>{
@@ -718,67 +680,20 @@ export default function App(){
     run:()=>{ setJ(initJ()); log("All joints → 0°","info"); },
   });
 
-  // Tiny CSV parser — no library needed for this simple, quoted-value-free shape
-  const parseCSV=(text)=>{
-    const lines=text.trim().split("\n");
-    if(lines.length<2) return [];
-    const headers=lines[0].split(",");
-    return lines.slice(1).map(line=>{
-      const cells=line.split(",");
-      const row={};
-      headers.forEach((h,i)=>{ row[h]=cells[i]; });
-      return row;
-    });
-  };
-
-  const refreshTrajectoryFromServer=useCallback(async()=>{
-    try{
-      const res=await fetch("/data/trajectory.csv",{cache:"no-store"});
-      if(!res.ok){ setWaypoints([]); return; }
-      const rows=parseCSV(await res.text());
-      const jointCols=rows.length ? Object.keys(rows[0]).filter(k=>k!=="order"&&k!=="timestamp_utc") : [];
-      setWaypoints(rows.map(r=>({
-        id:r.order, label:`Point ${r.order}`,
-        values:Object.fromEntries(jointCols.map(j=>[j,parseFloat(r[j])])),
-      })));
-    }catch{ /* file not there yet — normal until first save */ }
-  },[]);
-
-  const refreshPresetsFromServer=useCallback(async()=>{
-    try{
-      const res=await fetch("/data/presets.csv",{cache:"no-store"});
-      if(!res.ok){ setPresets(DEFAULT_PRESETS); return; }
-      const rows=parseCSV(await res.text());
-      const jointCols=rows.length ? Object.keys(rows[0]).filter(k=>k!=="name"&&k!=="timestamp_utc") : [];
-      const serverPresets=rows.map(r=>({
-        name:r.name, icon:"★", builtin:false,
-        values:Object.fromEntries(jointCols.map(j=>[j,parseFloat(r[j])])),
-      }));
-      // Server presets are the shared truth; built-in defaults stay available
-      // as a fallback until Home/Grab Ready/Stow have been saved for real.
-      const names=new Set(serverPresets.map(p=>p.name));
-      setPresets([...DEFAULT_PRESETS.filter(p=>!names.has(p.name)), ...serverPresets]);
-    }catch{ /* file not there yet */ }
-  },[]);
-
-  useEffect(()=>{ refreshTrajectoryFromServer(); refreshPresetsFromServer(); },[refreshTrajectoryFromServer,refreshPresetsFromServer]);
-
   const addPreset=()=>{
     const name = window.prompt("Name this position:");
     if(!name || !name.trim()) return;
     const trimmed = name.trim();
     if(presets.some(p=>p.name.toLowerCase()===trimmed.toLowerCase())){ log("Name exists","warn"); return; }
-    if(savePresetRef.current) savePresetRef.current.publish(new ROSLIB.Message({data:trimmed}));
-    log(`Saving "${trimmed}"…`,"info");
-    setTimeout(refreshPresetsFromServer,500);
+    setPresets(p=>[...p, { name:trimmed, icon:"★", values:{...joints}, builtin:false }]);
+    log(`Saved "${trimmed}"`,"success");
   };
   const deletePreset=(name)=>confirmOrRun({
     title:`Delete "${name}"?`, body:"Cannot be undone.", confirmLabel:"Delete", danger:true,
     run:()=>{
-      if(deletePresetRef.current) deletePresetRef.current.publish(new ROSLIB.Message({data:name}));
+      setPresets(p=>p.filter(x=>x.name!==name));
       if(testTarget===name) setTestTarget(presets.find(p=>p.builtin&&p.name!=="Home")?.name || "Grab Ready");
-      log(`Deleting "${name}"…`,"warn");
-      setTimeout(refreshPresetsFromServer,500);
+      log(`Deleted "${name}"`,"warn");
     },
   });
 
@@ -795,17 +710,14 @@ export default function App(){
   });
 
   const recordWaypoint=()=>{
-    if(saveTrajRef.current) saveTrajRef.current.publish(new ROSLIB.Message({}));
-    log(`Saving point…`,"info");
-    setTimeout(refreshTrajectoryFromServer,500);
+    const snapshot={...feedRef.current};
+    setWaypoints(p=>[...p,{id:Date.now(),values:snapshot,label:`Point ${p.length+1}`}]);
+    log(`Recorded Point ${waypoints.length+1}`,"success");
   };
-  const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id)); // local-only trim of the displayed list; full clear goes through the server
+  const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id));
   const clearWaypoints=()=>confirmOrRun({
     title:"Clear trajectory?", body:"Cannot be undone.", confirmLabel:"Clear", danger:true,
-    run:()=>{
-      if(clearTrajRef.current) clearTrajRef.current.publish(new ROSLIB.Message({}));
-      setWaypoints([]); log("Trajectory cleared","warn");
-    },
+    run:()=>{ setWaypoints([]); log("Trajectory cleared","warn"); },
   });
   const stopPlayback=()=>{ playCancelRef.current=true; };
   const playTrajectory=()=>{
@@ -875,16 +787,11 @@ export default function App(){
   const diag = useDiagnostics(conn==="connected" && mode==="ros", rosRef.current);
   const maxErr=Math.max(...JOINTS.map(j=>Math.abs((joints[j.id]||0)-(feed[j.id]||0))));
   const anyNear=JOINTS.some(j=>nearLim(joints[j.id],j));
-  const dis=estp||conn!=="connected"||!armPower||remoteHasPriority;
+  const dis=estp||conn!=="connected"||!armPower;
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
 
-  // Foxglove URL Routing — follows whatever machine is entered in the WS field,
-  // so Foxglove always points at the same robot the dashboard is connected to.
-  // Builds the ds= query params directly rather than relying on the container's
-  // /ui auto-redirect, since Foxglove's browser-cached "recent data sources"
-  // can silently override the DS_TYPE/DS_PORT env vars on that path.
   const robotHost = stripProto(url).split(":")[0] || (typeof window !== "undefined" ? window.location.hostname : "localhost");
   const fgTarget = url && url.startsWith("ws") ? url : `ws://${robotHost}:9090`;
   const fgUrl = `http://${robotHost}:8080/?ds=rosbridge-websocket&ds.url=${encodeURIComponent(fgTarget)}`;
@@ -892,12 +799,8 @@ export default function App(){
   return(
     <>
       <style>{CSS}</style>
-      <div style={{position:"fixed",bottom:8,right:8,zIndex:9999,background:"#000",color:"#0f0",fontFamily:"monospace",fontSize:11,padding:"4px 8px",border:"1px solid #0f0"}}>
-        DEBUG remoteHasPriority = {String(remoteHasPriority)}
-      </div>
       {estp&&<><div className="estop-ov"/><div className="estop-banner">⬛ EMERGENCY STOP — ALL MOTION HALTED</div></>}
       {demoMode&&!estp&&<div className="demo-banner">DEMO MODE — CONFIRMATIONS SKIPPED</div>}
-      {remoteHasPriority&&!estp&&<div className="priority-banner">🎮 CONTROLLED BY REMOTE — DEADMAN HELD</div>}
       <ConfirmDialog
         open={!!confirmAction} title={confirmAction?.title} body={confirmAction?.body}
         confirmLabel={confirmAction?.confirmLabel} danger={confirmAction?.danger}
@@ -1028,16 +931,7 @@ export default function App(){
                     <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
                     <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
                   </div>
-                  <div className="remote-saves-note">
-                    Trajectory points above are shared with the physical remote — saved from either side, both show up here and persist across reloads. This link is a raw export/backup of the same file.
-                  </div>
-                  <a className="pbtn2" href="/data/trajectory.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none"}}>
-                    ⬇ EXPORT TRAJECTORY (CSV)
-                  </a>
                   <div className="plbl">Saved Positions</div>
-                  <a className="pbtn2" href="/data/presets.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none",marginBottom:8}}>
-                    ⬇ EXPORT PRESETS (CSV)
-                  </a>
                   <div className="pgrid">
                     {presets.map(p=>(
                       <button key={p.name} className="pbtn" onClick={()=>requestPreset(p)} disabled={dis}>
