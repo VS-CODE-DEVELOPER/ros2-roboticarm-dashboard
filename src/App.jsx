@@ -623,7 +623,10 @@ export default function App(){
       // commands to /joint_commands.
       priorityRef.current=new ROSLIB.Topic({ros,name:"/webui/remote_priority",messageType:"std_msgs/Bool"});
       priorityRef.current.subscribe(msg=>{
-        if(typeof msg.data==="boolean") setRemoteHasPriority(msg.data);
+        if(typeof msg.data==="boolean"){
+          log(`[DEBUG] remote_priority received: ${msg.data}`,"info");
+          setRemoteHasPriority(msg.data);
+        }
       });
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
@@ -889,6 +892,9 @@ export default function App(){
   return(
     <>
       <style>{CSS}</style>
+      <div style={{position:"fixed",bottom:8,right:8,zIndex:9999,background:"#000",color:"#0f0",fontFamily:"monospace",fontSize:11,padding:"4px 8px",border:"1px solid #0f0"}}>
+        DEBUG remoteHasPriority = {String(remoteHasPriority)}
+      </div>
       {estp&&<><div className="estop-ov"/><div className="estop-banner">⬛ EMERGENCY STOP — ALL MOTION HALTED</div></>}
       {demoMode&&!estp&&<div className="demo-banner">DEMO MODE — CONFIRMATIONS SKIPPED</div>}
       {remoteHasPriority&&!estp&&<div className="priority-banner">🎮 CONTROLLED BY REMOTE — DEADMAN HELD</div>}
