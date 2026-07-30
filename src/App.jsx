@@ -594,6 +594,9 @@ export default function App(){
       pubRef.current=new ROSLIB.Topic({ros,name:"/joint_commands",messageType:"sensor_msgs/JointState"});
       subRef.current=new ROSLIB.Topic({ros,name:"/joint_states",  messageType:"sensor_msgs/JointState"});
       powerRef.current=new ROSLIB.Topic({ros,name:"/arm_power_state",messageType:"std_msgs/Bool"});
+      powerRef.current.subscribe(msg=>{
+        if(typeof msg.data==="boolean") setArmPower(msg.data);
+      });
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
           const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI;});
