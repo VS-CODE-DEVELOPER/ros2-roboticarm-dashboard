@@ -526,6 +526,7 @@ export default function App(){
 
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const saveTrajRef=useRef(null), clearTrajRef=useRef(null), savePresetRef=useRef(null), deletePresetRef=useRef(null);
+  const estopPubRef=useRef(null);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
@@ -601,6 +602,12 @@ export default function App(){
         // on-screen switch, or the physical remote via the MQTT bridge.
         if(typeof msg.data==="boolean") setArmPower(msg.data);
       });
+      // Same proven pattern as power — real two-way E-Stop sync, was
+      // purely local browser state before, invisible to the remote.
+      estopPubRef.current=new ROSLIB.Topic({ros,name:"/estop",messageType:"std_msgs/Bool"});
+      estopPubRef.current.subscribe(msg=>{
+        if(typeof msg.data==="boolean") setEstp(msg.data);
+      });
       // Unified store topics — same bridge the remote talks to via MQTT,
       // so trajectory points and presets saved from either side land in
       // one shared file on the Pi instead of two disconnected systems.
@@ -650,11 +657,15 @@ export default function App(){
   const handleEstop=useCallback(()=>{
     setEstp(true); log("⚠ EMERGENCY STOP ACTIVATED","error");
     dispatchCommand("ESTOP", {joints});
+    if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:true}));
   },[joints,log,dispatchCommand]);
 
   const handleResume=()=>setConfirmAction({
     title:"Resume motion?", body:"Clears emergency stop.", confirmLabel:"Resume", danger:false,
-    run:()=>{ setEstp(false); log("Emergency stop cleared","success"); },
+    run:()=>{
+      setEstp(false); log("Emergency stop cleared","success");
+      if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:false}));
+    },
   });
 
   const confirmOrRun=(opts)=>{
