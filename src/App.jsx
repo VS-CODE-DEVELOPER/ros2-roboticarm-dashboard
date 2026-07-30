@@ -338,6 +338,7 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 @keyframes ep{from{opacity:.5}to{opacity:1}}
 .estop-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--red);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 24px;border-radius:0 0 8px 8px;z-index:1000}
 .demo-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--purple);color:#0D1117;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;padding:4px 18px;border-radius:0 0 6px 6px;z-index:998}
+.priority-banner{position:fixed;top:var(--hdr);left:50%;transform:translateX(-50%);background:var(--amb);color:#0D1117;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;padding:4px 18px;border-radius:0 0 6px 6px;z-index:997}
 
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:2000}
 .modal{background:var(--panel);border:1px solid var(--b0);border-radius:var(--rl);padding:20px;width:320px}
@@ -526,6 +527,8 @@ export default function App(){
 
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const saveTrajRef=useRef(null), clearTrajRef=useRef(null), savePresetRef=useRef(null), deletePresetRef=useRef(null);
+  const estopPubRef=useRef(null), priorityRef=useRef(null);
+  const [remoteHasPriority,setRemoteHasPriority]=useState(false);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
@@ -608,6 +611,20 @@ export default function App(){
       clearTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/clear_trajectory",messageType:"std_msgs/Empty"});
       savePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/save_preset",messageType:"std_msgs/String"});
       deletePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_preset",messageType:"std_msgs/String"});
+      // E-Stop is now genuinely two-way — was purely local browser state
+      // before, invisible to the remote or the bridge entirely.
+      estopPubRef.current=new ROSLIB.Topic({ros,name:"/estop",messageType:"std_msgs/Bool"});
+      estopPubRef.current.subscribe(msg=>{
+        if(typeof msg.data==="boolean") setEstp(msg.data);
+      });
+      // Prevention-based arbitration: while the remote's DEADMAN is held,
+      // the bridge publishes this true, and the website steps back from
+      // jog controls instead of racing the remote to publish conflicting
+      // commands to /joint_commands.
+      priorityRef.current=new ROSLIB.Topic({ros,name:"/webui/remote_priority",messageType:"std_msgs/Bool"});
+      priorityRef.current.subscribe(msg=>{
+        if(typeof msg.data==="boolean") setRemoteHasPriority(msg.data);
+      });
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
           const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI;});
@@ -650,11 +667,15 @@ export default function App(){
   const handleEstop=useCallback(()=>{
     setEstp(true); log("⚠ EMERGENCY STOP ACTIVATED","error");
     dispatchCommand("ESTOP", {joints});
+    if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:true}));
   },[joints,log,dispatchCommand]);
 
   const handleResume=()=>setConfirmAction({
     title:"Resume motion?", body:"Clears emergency stop.", confirmLabel:"Resume", danger:false,
-    run:()=>{ setEstp(false); log("Emergency stop cleared","success"); },
+    run:()=>{
+      setEstp(false); log("Emergency stop cleared","success");
+      if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:false}));
+    },
   });
 
   const confirmOrRun=(opts)=>{
@@ -851,7 +872,7 @@ export default function App(){
   const diag = useDiagnostics(conn==="connected" && mode==="ros", rosRef.current);
   const maxErr=Math.max(...JOINTS.map(j=>Math.abs((joints[j.id]||0)-(feed[j.id]||0))));
   const anyNear=JOINTS.some(j=>nearLim(joints[j.id],j));
-  const dis=estp||conn!=="connected"||!armPower;
+  const dis=estp||conn!=="connected"||!armPower||remoteHasPriority;
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
@@ -870,6 +891,7 @@ export default function App(){
       <style>{CSS}</style>
       {estp&&<><div className="estop-ov"/><div className="estop-banner">⬛ EMERGENCY STOP — ALL MOTION HALTED</div></>}
       {demoMode&&!estp&&<div className="demo-banner">DEMO MODE — CONFIRMATIONS SKIPPED</div>}
+      {remoteHasPriority&&!estp&&<div className="priority-banner">🎮 CONTROLLED BY REMOTE — DEADMAN HELD</div>}
       <ConfirmDialog
         open={!!confirmAction} title={confirmAction?.title} body={confirmAction?.body}
         confirmLabel={confirmAction?.confirmLabel} danger={confirmAction?.danger}
