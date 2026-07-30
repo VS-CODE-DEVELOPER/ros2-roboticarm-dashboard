@@ -517,6 +517,14 @@ export default function App(){
   const [armPower,setArmPower] = useState(true);
   const [waypoints,setWaypoints] = useState(initialWaypoints());
   const [playing,setPlaying] = useState(false);
+  // Which joint (if any) is currently being dragged by THIS client. While
+  // dragging, the slider shows the locally-commanded value (responsive,
+  // no lag). While idle, it shows real feedback — so a remote-caused
+  // jog actually moves the slider, closing the "sliders never move on
+  // their own" gap.
+  const [dragId,setDragId] = useState(null);
+  const startDrag=(id)=>{ setJabs(id, feedRef.current[id] ?? joints[id]); setDragId(id); };
+  const endDrag=()=>setDragId(null);
   const playCancelRef = useRef(false);
 
   const [testRunning,setTestRunning] = useState(false);
@@ -930,7 +938,8 @@ export default function App(){
                   <div className="plbl">Joint Sliders <button className="zero-btn" onClick={requestReset} disabled={dis}>Zero All</button></div>
                   <div>
                     {JOINTS.map(j=>{
-                      const val=joints[j.id], fill=fillSt(val,j.min,j.max,j.color);
+                      const displayVal = dragId===j.id ? joints[j.id] : (feed[j.id] ?? joints[j.id]);
+                      const val=displayVal, fill=fillSt(val,j.min,j.max,j.color);
                       const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
                       return(
                         <div className={`jrow ${isA?"at":isN?"near":""}`} key={j.id}>
@@ -942,7 +951,10 @@ export default function App(){
                             <span className="jmin">{j.min}</span>
                             <div className="swrap">
                               <div className="strk"/><div className="sfill" style={fill}/>
-                              <input type="range" className={isA?"ls":isN?"ws":""} min={j.min} max={j.max} step=".5" value={val} onChange={e=>setJabs(j.id,e.target.value)} disabled={dis}/>
+                              <input type="range" className={isA?"ls":isN?"ws":""} min={j.min} max={j.max} step=".5" value={val}
+                                onMouseDown={()=>startDrag(j.id)} onTouchStart={()=>startDrag(j.id)}
+                                onMouseUp={endDrag} onTouchEnd={endDrag} onBlur={endDrag}
+                                onChange={e=>setJabs(j.id,e.target.value)} disabled={dis}/>
                             </div>
                             <span className="jmax">{j.max}</span>
                           </div>
