@@ -523,7 +523,7 @@ export default function App(){
   // jog actually moves the slider, closing the "sliders never move on
   // their own" gap.
   const [dragId,setDragId] = useState(null);
-  const startDrag=(id)=>{ setJabs(id, feedRef.current[id] ?? joints[id]); setDragId(id); };
+  const startDrag=(id)=>{ setJabs(id, feedReceivedRef.current[id] ? feedRef.current[id] : joints[id]); setDragId(id); };
   const endDrag=()=>setDragId(null);
   const playCancelRef = useRef(false);
 
@@ -537,6 +537,7 @@ export default function App(){
   const estopPubRef=useRef(null);
   const selfPowerChangeRef=useRef(false), selfEstopChangeRef=useRef(false);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
+  const feedReceivedRef=useRef({}); // {joint_id: true} once real /joint_states data has arrived for it
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
   
@@ -634,9 +635,21 @@ export default function App(){
       clearTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/clear_trajectory",messageType:"std_msgs/Empty"});
       savePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/save_preset",messageType:"std_msgs/String"});
       deletePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_preset",messageType:"std_msgs/String"});
+      // Real fix for "remote saves don't show on the website" — before,
+      // the website only refetched trajectory.csv/presets.csv right
+      // after ITS OWN local button clicks. Now it listens for change
+      // notifications from the bridge regardless of who caused them.
+      new ROSLIB.Topic({ros,name:"/webui/trajectory_count",messageType:"std_msgs/Int32"}).subscribe(msg=>{
+        refreshTrajectoryFromServer();
+        log(`Trajectory updated (${msg.data} pts)`,"info");
+      });
+      new ROSLIB.Topic({ros,name:"/webui/presets_changed",messageType:"std_msgs/Empty"}).subscribe(()=>{
+        refreshPresetsFromServer();
+        log("Presets updated (remote)","info");
+      });
       subRef.current.subscribe(msg=>{
         if(msg.name&&msg.position){
-          const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI;});
+          const fb={};msg.name.forEach((n,i)=>{fb[n]=(msg.position[i]*180)/Math.PI; feedReceivedRef.current[n]=true;});
           setFeed(p=>{ const merged={...p,...fb}; feedRef.current=merged; return merged; });
         }
       });
@@ -896,6 +909,7 @@ export default function App(){
   return(
     <>
       <style>{CSS}</style>
+      <div style={{position:"fixed",bottom:40,right:8,zIndex:9999,background:"#000",color:"#0f0",fontFamily:"monospace",fontSize:14,padding:"6px 10px",border:"1px solid #0f0"}}>estp = {String(estp)}</div>
       {estp&&<><div className="estop-ov"/><div className="estop-banner">⬛ EMERGENCY STOP — ALL MOTION HALTED</div></>}
       {demoMode&&!estp&&<div className="demo-banner">DEMO MODE — CONFIRMATIONS SKIPPED</div>}
       <ConfirmDialog
@@ -952,7 +966,8 @@ export default function App(){
                   <div className="plbl">Joint Sliders <button className="zero-btn" onClick={requestReset} disabled={dis}>Zero All</button></div>
                   <div>
                     {JOINTS.map(j=>{
-                      const displayVal = dragId===j.id ? joints[j.id] : (feed[j.id] ?? joints[j.id]);
+                      const hasFeed = !!feedReceivedRef.current[j.id];
+                      const displayVal = dragId===j.id ? joints[j.id] : (hasFeed ? feed[j.id] : joints[j.id]);
                       const val=displayVal, fill=fillSt(val,j.min,j.max,j.color);
                       const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
                       return(
