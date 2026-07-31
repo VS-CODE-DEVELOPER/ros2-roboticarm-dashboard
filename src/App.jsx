@@ -535,6 +535,7 @@ export default function App(){
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const saveTrajRef=useRef(null), clearTrajRef=useRef(null), savePresetRef=useRef(null), deletePresetRef=useRef(null);
   const estopPubRef=useRef(null);
+  const selfPowerChangeRef=useRef(false), selfEstopChangeRef=useRef(false);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
@@ -608,13 +609,23 @@ export default function App(){
       powerRef.current.subscribe(msg=>{
         // Keeps the toggle accurate no matter who changed power — the
         // on-screen switch, or the physical remote via the MQTT bridge.
-        if(typeof msg.data==="boolean") setArmPower(msg.data);
+        if(typeof msg.data==="boolean"){
+          if(selfPowerChangeRef.current){ selfPowerChangeRef.current=false; setArmPower(msg.data); }
+          else setArmPower(prev=>{
+            if(prev!==msg.data) log(`Power ${msg.data?"ON":"OFF"} (remote)`, msg.data?"success":"warn");
+            return msg.data;
+          });
+        }
       });
-      // Same proven pattern as power — real two-way E-Stop sync, was
-      // purely local browser state before, invisible to the remote.
       estopPubRef.current=new ROSLIB.Topic({ros,name:"/estop",messageType:"std_msgs/Bool"});
       estopPubRef.current.subscribe(msg=>{
-        if(typeof msg.data==="boolean") setEstp(msg.data);
+        if(typeof msg.data==="boolean"){
+          if(selfEstopChangeRef.current){ selfEstopChangeRef.current=false; setEstp(msg.data); }
+          else setEstp(prev=>{
+            if(prev!==msg.data) log(msg.data?"⚠ E-STOP TRIGGERED (remote)":"Emergency stop cleared (remote)", msg.data?"error":"success");
+            return msg.data;
+          });
+        }
       });
       // Unified store topics — same bridge the remote talks to via MQTT,
       // so trajectory points and presets saved from either side land in
@@ -665,6 +676,7 @@ export default function App(){
   const handleEstop=useCallback(()=>{
     setEstp(true); log("⚠ EMERGENCY STOP ACTIVATED","error");
     dispatchCommand("ESTOP", {joints});
+    selfEstopChangeRef.current=true;
     if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:true}));
   },[joints,log,dispatchCommand]);
 
@@ -672,6 +684,7 @@ export default function App(){
     title:"Resume motion?", body:"Clears emergency stop.", confirmLabel:"Resume", danger:false,
     run:()=>{
       setEstp(false); log("Emergency stop cleared","success");
+      selfEstopChangeRef.current=true;
       if(estopPubRef.current) estopPubRef.current.publish(new ROSLIB.Message({data:false}));
     },
   });
@@ -781,6 +794,7 @@ export default function App(){
     body: on ? "Motors will re-energize." : "Motors de-energize for hand manipulation.",
     confirmLabel: on ? "Re-energize" : "Enter Teach Mode", danger:false,
     run:()=>{
+      selfPowerChangeRef.current=true;
       setArmPower(on); publishPower(on);
       log(on?"Power ON":"Power OFF — Teach Mode", on?"success":"warn");
       if(!on) setLeftTab("teach");
