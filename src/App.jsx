@@ -327,6 +327,12 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .rt-summary b{color:var(--hi)}
 .rt-csv{margin-left:auto;padding:4px 10px;border-radius:5px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;cursor:pointer;border:1px solid var(--b1);background:transparent;color:var(--mid)}
 
+.rbtn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.rbtn{padding:14px 6px;border-radius:var(--r);border:1px solid var(--b0);background:var(--card);color:var(--lo);font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;text-align:center;letter-spacing:.05em;transition:all .1s}
+.rbtn.flash{border-color:var(--cyan);color:var(--cyan);background:var(--cdim);box-shadow:0 0 8px rgba(0,212,255,.3)}
+.rbtn.held.on{border-color:var(--grn);color:var(--grn);background:var(--gdim)}
+.rbtn.held.estop.on{border-color:var(--red);color:var(--red);background:var(--rdim);box-shadow:0 0 10px rgba(255,59,59,.4)}
+
 /* ── Strip & Modals ── */
 .strip{display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--bg);border-top:1px solid var(--b0);font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--mid)}
 .sdot{width:6px;height:6px;border-radius:50%;background:var(--lo);flex-shrink:0}
@@ -509,6 +515,7 @@ export default function App(){
   
   // Left Panel Tab State
   const [leftTab,setLeftTab] = useState("manual");
+  const [testColTab,setTestColTab] = useState("test");
 
   const [mode,setModeRaw] = useState(initialMode());
   const setMode = useCallback(v=>{ setModeRaw(v); safeSet("armctrl_mode", v); }, []);
@@ -535,6 +542,15 @@ export default function App(){
   const rosRef=useRef(null), pubRef=useRef(null), subRef=useRef(null), powerRef=useRef(null);
   const saveTrajRef=useRef(null), clearTrajRef=useRef(null), savePresetRef=useRef(null), deletePresetRef=useRef(null);
   const estopPubRef=useRef(null);
+  const deleteTrajPointRef=useRef(null);
+  const [remoteDeadman,setRemoteDeadman] = useState(false);
+  const [flashingButton,setFlashingButton] = useState(null);
+  const flashTimeoutRef = useRef(null);
+  const flashButton = useCallback((name)=>{
+    setFlashingButton(name);
+    clearTimeout(flashTimeoutRef.current);
+    flashTimeoutRef.current = setTimeout(()=>setFlashingButton(null), 400);
+  },[]);
   const selfPowerChangeRef=useRef(false), selfEstopChangeRef=useRef(false);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const feedReceivedRef=useRef({}); // {joint_id: true} once real /joint_states data has arrived for it
@@ -553,7 +569,12 @@ export default function App(){
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
 
   const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
-  const setSp  = useCallback(v=>{ setSpRaw(v); safeSet("armctrl_speed", String(v)); },[]);
+  const speedPubRef=useRef(null);
+  const selfSpeedChangeRef=useRef(false);
+  const setSp  = useCallback(v=>{
+    setSpRaw(v); safeSet("armctrl_speed", String(v));
+    if(speedPubRef.current){ selfSpeedChangeRef.current=true; speedPubRef.current.publish(new ROSLIB.Message({data:v})); }
+  },[]);
 
   const dispatchCommand = useCallback((type, payload) => {
     if (mode === "mock") {
@@ -628,6 +649,16 @@ export default function App(){
           });
         }
       });
+      speedPubRef.current=new ROSLIB.Topic({ros,name:"/webui/speed",messageType:"std_msgs/Int32"});
+      speedPubRef.current.subscribe(msg=>{
+        if(typeof msg.data==="number"){
+          if(selfSpeedChangeRef.current){ selfSpeedChangeRef.current=false; setSpRaw(msg.data); }
+          else setSpRaw(prev=>{
+            if(prev!==msg.data) log(`Speed → ${SPEEDS[msg.data]} (remote)`,"info");
+            return msg.data;
+          });
+        }
+      });
       // Unified store topics — same bridge the remote talks to via MQTT,
       // so trajectory points and presets saved from either side land in
       // one shared file on the Pi instead of two disconnected systems.
@@ -635,6 +666,13 @@ export default function App(){
       clearTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/clear_trajectory",messageType:"std_msgs/Empty"});
       savePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/save_preset",messageType:"std_msgs/String"});
       deletePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_preset",messageType:"std_msgs/String"});
+      deleteTrajPointRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_trajectory_point",messageType:"std_msgs/Int32"});
+      new ROSLIB.Topic({ros,name:"/webui/deadman",messageType:"std_msgs/Bool"}).subscribe(msg=>{
+        if(typeof msg.data==="boolean") setRemoteDeadman(msg.data);
+      });
+      new ROSLIB.Topic({ros,name:"/webui/activity",messageType:"std_msgs/String"}).subscribe(msg=>{
+        flashButton(msg.data);
+      });
       // Real fix for "remote saves don't show on the website" — before,
       // the website only refetched trajectory.csv/presets.csv right
       // after ITS OWN local button clicks. Now it listens for change
@@ -678,6 +716,10 @@ export default function App(){
     if (mode === "mock") { setConn("disconnected"); log("[SIM] Connection closed","warn"); return; }
     if(rosRef.current){rosRef.current.close();rosRef.current=null;}
   },[mode,log]);
+
+  useEffect(()=>{
+    connect(); // eslint-disable-line
+  },[]); // run once on mount only — intentionally not depending on `connect`
 
   const publish=useCallback((ov)=>{
     if(estp) return;
@@ -819,7 +861,10 @@ export default function App(){
     log(`Saving point…`,"info");
     setTimeout(refreshTrajectoryFromServer,500);
   };
-  const deleteWaypoint=(id)=>setWaypoints(p=>p.filter(w=>w.id!==id));
+  const deleteWaypoint=(id)=>{
+    setWaypoints(p=>p.filter(w=>w.id!==id)); // optimistic local trim
+    if(deleteTrajPointRef.current) deleteTrajPointRef.current.publish(new ROSLIB.Message({data:parseInt(id,10)}));
+  };
   const clearWaypoints=()=>confirmOrRun({
     title:"Clear trajectory?", body:"Cannot be undone.", confirmLabel:"Clear", danger:true,
     run:()=>{
@@ -909,7 +954,6 @@ export default function App(){
   return(
     <>
       <style>{CSS}</style>
-      <div style={{position:"fixed",bottom:40,right:8,zIndex:9999,background:"#000",color:"#0f0",fontFamily:"monospace",fontSize:14,padding:"6px 10px",border:"1px solid #0f0"}}>estp = {String(estp)}</div>
       {estp&&<><div className="estop-ov"/><div className="estop-banner">⬛ EMERGENCY STOP — ALL MOTION HALTED</div></>}
       {demoMode&&!estp&&<div className="demo-banner">DEMO MODE — CONFIRMATIONS SKIPPED</div>}
       <ConfirmDialog
@@ -1164,23 +1208,43 @@ export default function App(){
 
             {/* Test Column */}
             <div className="bot-col test-col" style={{borderLeft:"1px solid var(--b0)"}}>
-              <div className="plbl" style={{borderBottom:"none"}}>Repeatability Test</div>
-              <div className="rt-row">
-                <select className="rt-select" value={testTarget} onChange={e=>setTestTarget(e.target.value)} disabled={testRunning}>
-                  {presets.filter(p=>p.name!=="Home").map(p=><option key={p.name} value={p.name}>{p.name}</option>)}
-                </select>
-                {!testRunning
-                  ? <button className="rt-btn" onClick={()=>runRepeatabilityTest(testPreset,10)} disabled={conn!=="connected"||!armPower}>RUN ×10</button>
-                  : <button className="rt-btn stop" onClick={stopTest}>STOP</button>}
+              <div className="left-tabs" style={{flexShrink:0}}>
+                <button className={`ltab ${testColTab==="test"?"on":""}`} onClick={()=>setTestColTab("test")}>Repeatability</button>
+                <button className={`ltab teach ${testColTab==="remote"?"on":""}`} onClick={()=>setTestColTab("remote")}>Remote Status</button>
               </div>
-              <div className="rt-chart-wrap">
-                {testResults.length===0 && !testRunning ? <div className="rt-empty">No results yet</div> : <TrendChart results={testResults}/>}
-              </div>
-              {testResults.length>0 && (
-                <div className="rt-summary">
-                  <span>Avg <b>{testAvg.toFixed(2)}°</b></span>
-                  <span>Max <b>{testMax.toFixed(2)}°</b></span>
-                  <button className="rt-csv" onClick={exportTestCSV}>CSV</button>
+              {testColTab==="test" ? (
+                <>
+                  <div className="rt-row">
+                    <select className="rt-select" value={testTarget} onChange={e=>setTestTarget(e.target.value)} disabled={testRunning}>
+                      {presets.filter(p=>p.name!=="Home").map(p=><option key={p.name} value={p.name}>{p.name}</option>)}
+                    </select>
+                    {!testRunning
+                      ? <button className="rt-btn" onClick={()=>runRepeatabilityTest(testPreset,10)} disabled={conn!=="connected"||!armPower}>RUN ×10</button>
+                      : <button className="rt-btn stop" onClick={stopTest}>STOP</button>}
+                  </div>
+                  <div className="rt-chart-wrap">
+                    {testResults.length===0 && !testRunning ? <div className="rt-empty">No results yet</div> : <TrendChart results={testResults}/>}
+                  </div>
+                  {testResults.length>0 && (
+                    <div className="rt-summary">
+                      <span>Avg <b>{testAvg.toFixed(2)}°</b></span>
+                      <span>Max <b>{testMax.toFixed(2)}°</b></span>
+                      <button className="rt-csv" onClick={exportTestCSV}>CSV</button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{padding:12}}>
+                  <div className="remote-saves-note" style={{padding:"0 0 10px"}}>
+                    Live state from the physical remote. DEADMAN and E-Stop show real held/active status; the other four flash briefly when actually pressed.
+                  </div>
+                  <div className="rbtn-grid">
+                    <div className={`rbtn ${flashingButton==="UP_DOWN"?"flash":""}`}>UP/DN</div>
+                    <div className={`rbtn ${flashingButton==="MODE"?"flash":""}`}>MODE</div>
+                    <div className={`rbtn ${flashingButton==="SAVE"?"flash":""}`}>SAVE</div>
+                    <div className={`rbtn held ${remoteDeadman?"on":""}`}>DEADMAN</div>
+                    <div className={`rbtn held estop ${estp?"on":""}`}>E-STOP</div>
+                  </div>
                 </div>
               )}
             </div>
