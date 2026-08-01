@@ -543,6 +543,7 @@ export default function App(){
   const saveTrajRef=useRef(null), clearTrajRef=useRef(null), savePresetRef=useRef(null), deletePresetRef=useRef(null);
   const estopPubRef=useRef(null);
   const deleteTrajPointRef=useRef(null);
+  const uploadTrajRef=useRef(null);
   const [remoteDeadman,setRemoteDeadman] = useState(false);
   const [flashingButton,setFlashingButton] = useState(null);
   const flashTimeoutRef = useRef(null);
@@ -632,6 +633,7 @@ export default function App(){
         // Keeps the toggle accurate no matter who changed power — the
         // on-screen switch, or the physical remote via the MQTT bridge.
         if(typeof msg.data==="boolean"){
+          setLeftTab(msg.data ? "manual" : "teach"); // symmetric — both directions automatic now
           if(selfPowerChangeRef.current){ selfPowerChangeRef.current=false; setArmPower(msg.data); }
           else setArmPower(prev=>{
             if(prev!==msg.data) log(`Power ${msg.data?"ON":"OFF"} (remote)`, msg.data?"success":"warn");
@@ -667,6 +669,7 @@ export default function App(){
       savePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/save_preset",messageType:"std_msgs/String"});
       deletePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_preset",messageType:"std_msgs/String"});
       deleteTrajPointRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_trajectory_point",messageType:"std_msgs/Int32"});
+      uploadTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/upload_trajectory",messageType:"std_msgs/String"});
       new ROSLIB.Topic({ros,name:"/webui/deadman",messageType:"std_msgs/Bool"}).subscribe(msg=>{
         if(typeof msg.data==="boolean") setRemoteDeadman(msg.data);
       });
@@ -865,6 +868,23 @@ export default function App(){
     setWaypoints(p=>p.filter(w=>w.id!==id)); // optimistic local trim
     if(deleteTrajPointRef.current) deleteTrajPointRef.current.publish(new ROSLIB.Message({data:parseInt(id,10)}));
   };
+  const handleTrajectoryUpload=(e)=>{
+    const file = e.target.files?.[0];
+    e.target.value=""; // allow re-selecting the same filename later
+    if(!file) return;
+    confirmOrRun({
+      title:"Upload trajectory?", body:`Replaces the current working trajectory with "${file.name}".`, confirmLabel:"Upload", danger:true,
+      run:()=>{
+        const reader = new FileReader();
+        reader.onload = ()=>{
+          if(uploadTrajRef.current) uploadTrajRef.current.publish(new ROSLIB.Message({data:reader.result}));
+          log(`Uploading "${file.name}"…`,"info");
+          setTimeout(refreshTrajectoryFromServer,500);
+        };
+        reader.readAsText(file);
+      },
+    });
+  };
   const clearWaypoints=()=>confirmOrRun({
     title:"Clear trajectory?", body:"Cannot be undone.", confirmLabel:"Clear", danger:true,
     run:()=>{
@@ -941,6 +961,13 @@ export default function App(){
   const maxErr=Math.max(...JOINTS.map(j=>Math.abs((joints[j.id]||0)-(feed[j.id]||0))));
   const anyNear=JOINTS.some(j=>nearLim(joints[j.id],j));
   const dis=estp||conn!=="connected"||!armPower;
+  // Fixes the 2D Fallback View bug — was `armPower?joints:feed`, an
+  // all-or-nothing switch. `feed` starts pre-filled with 0 for every
+  // joint, so any joint without live hardware feedback showed as
+  // permanently folded to zero the instant power went off. Now uses
+  // the same per-joint "have we actually heard from this joint" check
+  // that already fixed the sliders.
+  const vizJoints = Object.fromEntries(JOINTS.map(j=>[j.id, feedReceivedRef.current[j.id] ? feed[j.id] : joints[j.id]]));
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
@@ -1097,6 +1124,10 @@ export default function App(){
                   <a className="pbtn2" href="/data/trajectory.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none"}}>
                     ⬇ EXPORT TRAJECTORY (CSV)
                   </a>
+                  <input type="file" accept=".csv" id="traj-upload-input" style={{display:"none"}} onChange={handleTrajectoryUpload}/>
+                  <label htmlFor="traj-upload-input" className="pbtn2" style={{display:"block",textAlign:"center",marginTop:6,cursor:conn!=="connected"?"not-allowed":"pointer",opacity:conn!=="connected"?.3:1}}>
+                    ⬆ UPLOAD TRAJECTORY (CSV)
+                  </label>
                   <div className="plbl">Saved Positions</div>
                   <a className="pbtn2" href="/data/presets.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none",marginBottom:8}}>
                     ⬇ EXPORT PRESETS (CSV)
@@ -1160,7 +1191,7 @@ export default function App(){
 
             <div style={{marginTop:"auto"}}>
               <div className="slbl" style={{borderTop:"1px solid var(--b0)"}}>2D Fallback View</div>
-              <ArmViz joints={armPower?joints:feed}/>
+              <ArmViz joints={vizJoints}/>
             </div>
           </aside>
 
