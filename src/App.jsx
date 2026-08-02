@@ -828,7 +828,11 @@ export default function App(){
 
   const requestPreset=(p)=>confirmOrRun({
     title:`Move to "${p.name}"?`, body:"Arm will move here.", confirmLabel:"Move Arm", danger:false,
-    run:()=>{ setJ(p.values); log(`Preset applied: ${p.name}`,"info"); },
+    run:()=>{
+      const safeValues = Object.fromEntries(JOINTS.map(j=>[j.id, Number.isFinite(p.values?.[j.id]) ? p.values[j.id] : 0]));
+      setJ(safeValues);
+      log(`Preset applied: ${p.name}`,"info");
+    },
   });
   const requestReset=()=>confirmOrRun({
     title:"Reset all joints?", body:"Moves back to zero.", confirmLabel:"Reset", danger:false,
@@ -961,7 +965,10 @@ export default function App(){
           if(playCancelRef.current) break;
           idx+=1;
           log(`Playback: Point ${idx}/${waypoints.length}`,"info");
-          setJ(prev=>({...prev,...wp.values}));
+          setJ(prev=>{
+            const safe = Object.fromEntries(Object.entries(wp.values||{}).filter(([,v])=>Number.isFinite(v)));
+            return {...prev,...safe};
+          });
           await new Promise(res=>setTimeout(res,1500));
         }
         setPlaying(false);
@@ -1352,7 +1359,7 @@ export default function App(){
           <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.3 · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.2 · {ts()}</span>
         </div>
 
       </div>
