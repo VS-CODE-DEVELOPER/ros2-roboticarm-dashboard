@@ -1032,7 +1032,7 @@ export default function App(){
   // permanently folded to zero the instant power went off. Now uses
   // the same per-joint "have we actually heard from this joint" check
   // that already fixed the sliders.
-  const vizJoints = Object.fromEntries(JOINTS.map(j=>[j.id, feedReceivedRef.current[j.id] ? feed[j.id] : joints[j.id]]));
+  const vizJoints = Object.fromEntries(JOINTS.map(j=>[j.id, (feedReceivedRef.current[j.id] ? feed[j.id] : joints[j.id]) ?? 0]));
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
@@ -1108,7 +1108,7 @@ export default function App(){
                   <div>
                     {JOINTS.map(j=>{
                       const hasFeed = !!feedReceivedRef.current[j.id];
-                      const displayVal = dragId===j.id ? joints[j.id] : (hasFeed ? feed[j.id] : joints[j.id]);
+                      const displayVal = (dragId===j.id ? joints[j.id] : (hasFeed ? feed[j.id] : joints[j.id])) ?? 0;
                       const val=displayVal, fill=fillSt(val,j.min,j.max,j.color);
                       const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
                       return(
