@@ -566,6 +566,7 @@ export default function App(){
   const selfPowerChangeRef=useRef(false), selfEstopChangeRef=useRef(false);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
   const selfCmdChangeRef=useRef(false);
+  const skipNextAutoPublishRef=useRef(false);
   const feedReceivedRef=useRef({}); // {joint_id: true} once real /joint_states data has arrived for it
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
@@ -646,6 +647,7 @@ export default function App(){
       pubRef.current.subscribe(msg=>{
         if(selfCmdChangeRef.current){ selfCmdChangeRef.current=false; return; } // our own echo, not a real external change
         if(msg.name&&msg.position){
+          skipNextAutoPublishRef.current=true; // display-only update, don't re-broadcast what we just received
           setJ(prev=>{
             const merged={...prev};
             msg.name.forEach((n,i)=>{ if(dragIdRef.current!==n) merged[n]=(msg.position[i]*180)/Math.PI; });
@@ -682,7 +684,7 @@ export default function App(){
         if(typeof msg.data==="number"){
           if(selfSpeedChangeRef.current){ selfSpeedChangeRef.current=false; setSpRaw(msg.data); }
           else setSpRaw(prev=>{
-            if(prev!==msg.data) log(`Speed → ${SPEEDS[msg.data]} (remote)`,"info");
+            if(prev!==msg.data){ log(`Speed → ${SPEEDS[msg.data]} (remote)`,"info"); setTestColTab("remote"); }
             return msg.data;
           });
         }
@@ -716,6 +718,11 @@ export default function App(){
         flashButton(isButtonCategory ? data : "MODE");
         log(`Remote: ${ACTIVITY_LABELS[data] || data}`,"info");
         setTestColTab("remote");
+      });
+      new ROSLIB.Topic({ros,name:"/webui/playback_progress",messageType:"std_msgs/String"}).subscribe(msg=>{
+        if(msg.data==="STOPPED") log("Remote playback stopped","warn");
+        else if(msg.data==="COMPLETE") log("Remote playback complete","success");
+        else log(`Playback: Point ${msg.data}`,"info");
       });
       // Real fix for "remote saves don't show on the website" — before,
       // the website only refetched trajectory.csv/presets.csv right
@@ -814,7 +821,10 @@ export default function App(){
     setJ(prev=>{const j=JOINTS.find(x=>x.id===id);return{...prev,[id]:clamp(v,j.min,j.max)};});
   },[]);
 
-  useEffect(()=>{if(conn==="connected"&&!estp) publish(joints);},[joints]); // eslint-disable-line
+  useEffect(()=>{
+    if(skipNextAutoPublishRef.current){ skipNextAutoPublishRef.current=false; return; }
+    if(conn==="connected"&&!estp) publish(joints);
+  },[joints]); // eslint-disable-line
 
   const requestPreset=(p)=>confirmOrRun({
     title:`Move to "${p.name}"?`, body:"Arm will move here.", confirmLabel:"Move Arm", danger:false,
@@ -946,8 +956,11 @@ export default function App(){
         }
         playCancelRef.current=false; setPlaying(true);
         log(`Playing trajectory`,"info");
+        let idx=0;
         for(const wp of waypoints){
           if(playCancelRef.current) break;
+          idx+=1;
+          log(`Playback: Point ${idx}/${waypoints.length}`,"info");
           setJ(prev=>({...prev,...wp.values}));
           await new Promise(res=>setTimeout(res,1500));
         }
@@ -1339,7 +1352,7 @@ export default function App(){
           <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.2 · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.3 · {ts()}</span>
         </div>
 
       </div>
