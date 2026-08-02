@@ -554,6 +554,8 @@ export default function App(){
   const estopPubRef=useRef(null);
   const deleteTrajPointRef=useRef(null);
   const uploadTrajRef=useRef(null);
+  const deadmanSubRef=useRef(null), remoteOnlineSubRef=useRef(null), activitySubRef=useRef(null);
+  const playbackProgressSubRef=useRef(null), trajCountSubRef=useRef(null), presetsChangedSubRef=useRef(null);
   const [remoteDeadman,setRemoteDeadman] = useState(false);
   const [remoteOnline,setRemoteOnline] = useState(null); // null = unknown yet, true/false once heard from
   const [flashingButton,setFlashingButton] = useState(null);
@@ -698,13 +700,15 @@ export default function App(){
       deletePresetRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_preset",messageType:"std_msgs/String"});
       deleteTrajPointRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_trajectory_point",messageType:"std_msgs/Int32"});
       uploadTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/upload_trajectory",messageType:"std_msgs/String"});
-      new ROSLIB.Topic({ros,name:"/webui/deadman",messageType:"std_msgs/Bool"}).subscribe(msg=>{
+      deadmanSubRef.current=new ROSLIB.Topic({ros,name:"/webui/deadman",messageType:"std_msgs/Bool"});
+      deadmanSubRef.current.subscribe(msg=>{
         if(typeof msg.data==="boolean"){
           setRemoteDeadman(msg.data);
           if(msg.data) setTestColTab("remote");
         }
       });
-      new ROSLIB.Topic({ros,name:"/webui/remote_online",messageType:"std_msgs/Bool"}).subscribe(msg=>{
+      remoteOnlineSubRef.current=new ROSLIB.Topic({ros,name:"/webui/remote_online",messageType:"std_msgs/Bool"});
+      remoteOnlineSubRef.current.subscribe(msg=>{
         if(typeof msg.data==="boolean"){
           setRemoteOnline(prev=>{
             if(prev!==null && prev!==msg.data) log(`Remote ${msg.data?"connected":"⚠ disconnected"}`, msg.data?"success":"error");
@@ -712,14 +716,16 @@ export default function App(){
           });
         }
       });
-      new ROSLIB.Topic({ros,name:"/webui/activity",messageType:"std_msgs/String"}).subscribe(msg=>{
+      activitySubRef.current=new ROSLIB.Topic({ros,name:"/webui/activity",messageType:"std_msgs/String"});
+      activitySubRef.current.subscribe(msg=>{
         const data = msg.data;
         const isButtonCategory = data==="UP_DOWN" || data==="SAVE";
         flashButton(isButtonCategory ? data : "MODE");
         log(`Remote: ${ACTIVITY_LABELS[data] || data}`,"info");
         setTestColTab("remote");
       });
-      new ROSLIB.Topic({ros,name:"/webui/playback_progress",messageType:"std_msgs/String"}).subscribe(msg=>{
+      playbackProgressSubRef.current=new ROSLIB.Topic({ros,name:"/webui/playback_progress",messageType:"std_msgs/String"});
+      playbackProgressSubRef.current.subscribe(msg=>{
         if(msg.data==="STOPPED") log("Remote playback stopped","warn");
         else if(msg.data==="COMPLETE") log("Remote playback complete","success");
         else log(`Playback: Point ${msg.data}`,"info");
@@ -728,11 +734,13 @@ export default function App(){
       // the website only refetched trajectory.csv/presets.csv right
       // after ITS OWN local button clicks. Now it listens for change
       // notifications from the bridge regardless of who caused them.
-      new ROSLIB.Topic({ros,name:"/webui/trajectory_count",messageType:"std_msgs/Int32"}).subscribe(msg=>{
+      trajCountSubRef.current=new ROSLIB.Topic({ros,name:"/webui/trajectory_count",messageType:"std_msgs/Int32"});
+      trajCountSubRef.current.subscribe(msg=>{
         refreshTrajectoryFromServer();
         log(`Trajectory updated (${msg.data} pts)`,"info");
       });
-      new ROSLIB.Topic({ros,name:"/webui/presets_changed",messageType:"std_msgs/Empty"}).subscribe(()=>{
+      presetsChangedSubRef.current=new ROSLIB.Topic({ros,name:"/webui/presets_changed",messageType:"std_msgs/Empty"});
+      presetsChangedSubRef.current.subscribe(()=>{
         refreshPresetsFromServer();
         log("Presets updated (remote)","info");
       });
