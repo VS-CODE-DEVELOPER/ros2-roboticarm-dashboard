@@ -17,6 +17,14 @@ const DEFAULT_PRESETS = [
   { name:"Stow",       icon:"▣", values:{joint_1:0,  joint_2:-90, joint_3:135, joint_4:-45,joint_5:0, joint_6:0  }, builtin:true },
 ];
 const SPEEDS   = ["Slow","Normal","Fast"];
+const ACTIVITY_LABELS = {
+  UP_DOWN:"Jog", SAVE:"Save Waypoint",
+  motors_on:"Motors ON", motors_off:"Motors OFF",
+  waypoints_play:"Play Routine", waypoints_stop:"Stop Playback", waypoints_clear:"Clear Trajectory",
+  home:"Preset: Home", grab_ready:"Preset: Grab Ready", stow:"Preset: Stow",
+  save_preset:"Save Preset", delete_last_preset:"Delete Last Preset",
+  estop_engage:"E-Stop", estop_resume:"E-Stop Resume",
+};
 const JOG_MS   = [120, 60, 30];
 const JOG_DEG  = [1, 2, 5];
 const initJ    = () => Object.fromEntries(JOINTS.map(j=>[j.id,0]));
@@ -530,6 +538,8 @@ export default function App(){
   // jog actually moves the slider, closing the "sliders never move on
   // their own" gap.
   const [dragId,setDragId] = useState(null);
+  const dragIdRef = useRef(null);
+  useEffect(()=>{ dragIdRef.current=dragId; },[dragId]);
   const startDrag=(id)=>{ setJabs(id, feedReceivedRef.current[id] ? feedRef.current[id] : joints[id]); setDragId(id); };
   const endDrag=()=>setDragId(null);
   const playCancelRef = useRef(false);
@@ -545,6 +555,7 @@ export default function App(){
   const deleteTrajPointRef=useRef(null);
   const uploadTrajRef=useRef(null);
   const [remoteDeadman,setRemoteDeadman] = useState(false);
+  const [remoteOnline,setRemoteOnline] = useState(null); // null = unknown yet, true/false once heard from
   const [flashingButton,setFlashingButton] = useState(null);
   const flashTimeoutRef = useRef(null);
   const flashButton = useCallback((name)=>{
@@ -554,6 +565,7 @@ export default function App(){
   },[]);
   const selfPowerChangeRef=useRef(false), selfEstopChangeRef=useRef(false);
   const cntRef=useRef(0), estRef=useRef(false), feedRef=useRef(initJ());
+  const selfCmdChangeRef=useRef(false);
   const feedReceivedRef=useRef({}); // {joint_id: true} once real /joint_states data has arrived for it
   const logHistoryRef=useRef([]); 
   const reconnectAttemptRef=useRef(0), reconnectTimerRef=useRef(null), manualDisconnectRef=useRef(false);
@@ -592,6 +604,7 @@ export default function App(){
     const ROSLIB = window.ROSLIB;
     if (type === "JOINT_COMMAND") {
       if (!pubRef.current || !ROSLIB) return;
+      selfCmdChangeRef.current=true;
       pubRef.current.publish(new ROSLIB.Message({
         name: JOINTS.map(j=>j.id),
         position: JOINTS.map(j=>(payload.joints[j.id]*Math.PI)/180),
@@ -601,11 +614,14 @@ export default function App(){
     } else if (type === "ARM_POWER") {
       if (powerRef.current && ROSLIB) powerRef.current.publish(new ROSLIB.Message({data:payload.on}));
     } else if (type === "ESTOP") {
-      if (pubRef.current && ROSLIB) pubRef.current.publish(new ROSLIB.Message({
-        name: JOINTS.map(j=>j.id),
-        position: JOINTS.map(j=>(payload.joints[j.id]*Math.PI)/180),
-        velocity: JOINTS.map(()=>0), effort: JOINTS.map(()=>0),
-      }));
+      if (pubRef.current && ROSLIB){
+        selfCmdChangeRef.current=true;
+        pubRef.current.publish(new ROSLIB.Message({
+          name: JOINTS.map(j=>j.id),
+          position: JOINTS.map(j=>(payload.joints[j.id]*Math.PI)/180),
+          velocity: JOINTS.map(()=>0), effort: JOINTS.map(()=>0),
+        }));
+      }
     }
   }, [mode, log]);
 
@@ -627,6 +643,16 @@ export default function App(){
       reconnectAttemptRef.current=0;
       setConn("connected"); log("ROS2 bridge connected","success");
       pubRef.current=new ROSLIB.Topic({ros,name:"/joint_commands",messageType:"sensor_msgs/JointState"});
+      pubRef.current.subscribe(msg=>{
+        if(selfCmdChangeRef.current){ selfCmdChangeRef.current=false; return; } // our own echo, not a real external change
+        if(msg.name&&msg.position){
+          setJ(prev=>{
+            const merged={...prev};
+            msg.name.forEach((n,i)=>{ if(dragIdRef.current!==n) merged[n]=(msg.position[i]*180)/Math.PI; });
+            return merged;
+          });
+        }
+      });
       subRef.current=new ROSLIB.Topic({ros,name:"/joint_states",  messageType:"sensor_msgs/JointState"});
       powerRef.current=new ROSLIB.Topic({ros,name:"/arm_power_state",messageType:"std_msgs/Bool"});
       powerRef.current.subscribe(msg=>{
@@ -671,10 +697,25 @@ export default function App(){
       deleteTrajPointRef.current=new ROSLIB.Topic({ros,name:"/webui/delete_trajectory_point",messageType:"std_msgs/Int32"});
       uploadTrajRef.current=new ROSLIB.Topic({ros,name:"/webui/upload_trajectory",messageType:"std_msgs/String"});
       new ROSLIB.Topic({ros,name:"/webui/deadman",messageType:"std_msgs/Bool"}).subscribe(msg=>{
-        if(typeof msg.data==="boolean") setRemoteDeadman(msg.data);
+        if(typeof msg.data==="boolean"){
+          setRemoteDeadman(msg.data);
+          if(msg.data) setTestColTab("remote");
+        }
+      });
+      new ROSLIB.Topic({ros,name:"/webui/remote_online",messageType:"std_msgs/Bool"}).subscribe(msg=>{
+        if(typeof msg.data==="boolean"){
+          setRemoteOnline(prev=>{
+            if(prev!==null && prev!==msg.data) log(`Remote ${msg.data?"connected":"⚠ disconnected"}`, msg.data?"success":"error");
+            return msg.data;
+          });
+        }
       });
       new ROSLIB.Topic({ros,name:"/webui/activity",messageType:"std_msgs/String"}).subscribe(msg=>{
-        flashButton(msg.data);
+        const data = msg.data;
+        const isButtonCategory = data==="UP_DOWN" || data==="SAVE";
+        flashButton(isButtonCategory ? data : "MODE");
+        log(`Remote: ${ACTIVITY_LABELS[data] || data}`,"info");
+        setTestColTab("remote");
       });
       // Real fix for "remote saves don't show on the website" — before,
       // the website only refetched trajectory.csv/presets.csv right
@@ -898,7 +939,11 @@ export default function App(){
     confirmOrRun({
       title:"Play trajectory?", body:`Moves through ${waypoints.length} points.`, confirmLabel:"Play", danger:false,
       run: async ()=>{
-        if(!armPower){ log("Re-energize first","error"); return; }
+        if(!armPower){
+          selfPowerChangeRef.current=true; setArmPower(true); publishPower(true);
+          log("Auto-energizing for playback","info");
+          await new Promise(res=>setTimeout(res,600)); // let the switch/tab-flip settle visibly before moving
+        }
         playCancelRef.current=false; setPlaying(true);
         log(`Playing trajectory`,"info");
         for(const wp of waypoints){
@@ -1007,6 +1052,11 @@ export default function App(){
           </div>
           <div className="hdr-r">
             <div className={`badge ${conn}`}><div className="bdg-dot"/>{conn==="connected"?"ONLINE":conn==="connecting"?"CONNECTING":"OFFLINE"}</div>
+            {conn==="connected" && remoteOnline!==null && (
+              <div className={`badge ${remoteOnline?"connected":"disconnected"}`} title="Physical remote's connection to the Pi — separate from this website's own connection above">
+                <div className="bdg-dot"/>REMOTE {remoteOnline?"ONLINE":"OFFLINE"}
+              </div>
+            )}
             {estp ? <button className="hbtn resume" onClick={handleResume}>CLEAR EMERGENCY</button> : <button className="hbtn estop" onClick={handleEstop}>⬛ E-STOP</button>}
           </div>
         </header>
@@ -1114,7 +1164,7 @@ export default function App(){
                     }
                   </div>
                   <div className="play-row">
-                    <button className="pbtn2 primary" onClick={playTrajectory} disabled={waypoints.length===0||playing||!armPower||conn!=="connected"}>▶ PLAY</button>
+                    <button className="pbtn2 primary" onClick={playTrajectory} disabled={waypoints.length===0||playing||conn!=="connected"}>▶ PLAY</button>
                     <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
                     <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
                   </div>
@@ -1289,7 +1339,7 @@ export default function App(){
           <span>{mode==="mock"?"simulation mode":"ros2 bridge"}</span>
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
-          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.1 · {ts()}</span>
+          <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.2 · {ts()}</span>
         </div>
 
       </div>
