@@ -1,277 +1,158 @@
-# ARM·CONTROL — 6-DOF Robotic Arm Dashboard
+# ARM·CONTROL — 3DOF Teachable Robotic Arm
 
-> A real-time, browser-based Human–Machine Interface (HMI) for controlling a 6-DOF teachable robotic arm. Built with React, Vite, ROS2, and rosbridge, the dashboard runs entirely client-side without requiring its own application backend. An integrated Local Simulation Mode enables full UI development and testing without physical hardware.
+> A real-time, dual-interface control system for a custom 3D-printed, 3-degree-of-freedom robotic arm. A browser-based dashboard and a synchronized handheld physical remote both operate on one shared robot state, coordinated over a distributed ROS2 / micro-ROS / MQTT architecture. Built to demonstrate closed-loop embedded control, hardware-software integration, and real-time systems engineering.
 
 ---
 
-# Overview
+## Overview
 
-ARM·CONTROL is the operator interface for a 6-axis robotic arm and implements the three primary capabilities of the project.
+ARM·CONTROL is the full control system for a 3DOF robotic arm — base rotation, elbow, and wrist — plus an independently actuated gripper end-effector. It was built as an Embedded Systems Lab final project, and implements four primary capabilities:
 
 | Function | Description |
 |----------|-------------|
-| **Web Control** | Operate and monitor the robotic arm entirely from a browser using joint controls, Cartesian jogging, saved positions, and a live visualization. |
-| **Teach Mode** | De-energize the motors, manually guide the arm, record waypoints, and replay recorded trajectories. |
-| **Closed-Loop Accuracy** | Measure positioning performance using encoder feedback with automated repeatability testing, error visualization, and CSV export. |
+| **Web Control** | Operate and monitor the robotic arm entirely from a browser: per-joint sliders, live feedback-vs-command comparison, saved presets, and a live 3D visualization. |
+| **Teach Mode** | De-energize the stepper joints, manually guide the arm by hand, and record waypoints — combining true encoder feedback (where sensors exist) with commanded servo positions (where they don't) into one consistent pose. |
+| **Physical Remote** | A synchronized handheld remote (ESP32-S2, MQTT over WiFi) provides jog control, waypoint saving, and preset triggering. Every action on either interface is reflected on the other in real time — there is exactly one shared source of truth, not two competing ones. |
+| **Repeatability Testing** | Run a saved preset automatically for a configurable number of cycles (10+), measuring positional consistency across repeated runs, with error visualization and CSV export. |
+
+![Dashboard with Foxglove 3D live view](docs/images/dashboard-foxglove-live.png)
+*The web dashboard's joint sliders and trajectory controls, running alongside Foxglove's live 3D digital twin of the arm.*
+
+**A note on deployment**: the hardware-connected dashboard is self-hosted over plain HTTP from the Raspberry Pi (via Nginx), because a browser blocks a secure (HTTPS) page from opening an insecure (`ws://`) WebSocket connection — which is exactly what talking to the Pi's rosbridge server requires. A separate **Local Simulation Mode** build has no real WebSocket dependency at all (it runs entirely client-side, with no live hardware connection) and is what's deployed on Vercel, for UI development and demonstration without needing the physical arm.
 
 ---
 
-# System Architecture
+## System Architecture
 
 ```text
-Browser (React 18 + Vite Dashboard)
-        │
-        │  WebSocket (ws://<pi-host>:9090)
-        ▼
-rosbridge_websocket (Docker on Raspberry Pi)
-        │
-        │  ROS2 Topics
-        ▼
-Serial Bridge Node ─────► ESP32-S2 ─────► Stepper / Servo Drivers
-        │                                 │
-        ▼                                 ▼
-/joint_states Feedback            AS5600 Encoders
-        │
-        ▼
-Foxglove Studio (3D Digital Twin)
+Browser (React 18 + Vite Dashboard)          Physical Remote (ESP32-S2)
+        │                                             │
+        │  WebSocket (ws://<pi-host>:9090)            │  MQTT / WiFi
+        ▼                                             ▼
+rosbridge_websocket (Docker, on Raspberry Pi)   Mosquitto Broker
+        │                                             │
+        └──────────────► Python MQTT<->ROS2 Bridge ◄──┘
+                       (single source of truth for
+                     robot state; sole writer of the
+                    trajectory.csv / presets.csv files)
+                                    │
+                                    │  ROS2 Topics
+                                    │  (/joint_commands, /joint_states,
+                                    │   /gimbal_target, /end_effector_target)
+                                    ▼
+                        micro-ROS Agent (serial <-> ROS2 DDS)
+                                    │  USB / UART
+                                    ▼
+                     ESP32-S3 (micro-ROS client — closed-loop
+                     PID stepper control + PWM servo control)
+                                    │
+                        ┌───────────┴───────────┐
+                        ▼                        ▼
+              DRV8825 Drivers              MF90 Servos
+              → NEMA17 Steppers            (wrist, gripper)
+              → Planetary Gearboxes
+                        │
+                        ▼
+              AS5600 Encoders (output stage,
+              analogue mode) → position feedback
+                                    │
+                                    ▼
+                        Foxglove Studio (3D Digital Twin,
+                        driven by URDF + robot_state_publisher)
 ```
 
-All user interactions pass through a single `dispatchCommand()` transport layer instead of directly interacting with ROS2 APIs. This abstraction isolates communication from the user interface, allowing the transport mechanism to be replaced in the future (for example MQTT instead of rosbridge) without modifying the dashboard logic.
+All dashboard interactions pass through a single `dispatchCommand()` transport layer rather than talking to ROS2 APIs directly, isolating the UI from the communication mechanism — the transport could in principle be swapped out without touching dashboard logic.
 
-## Network Stack
-
-| Layer | Technology |
-|--------|------------|
-| Remote access | Tailscale VPN |
-| Browser ↔ ROS2 | rosbridge_websocket |
-| Dashboard hosting | Nginx (static build on Raspberry Pi) |
-| Visualization | Foxglove Studio |
-
-The Raspberry Pi only serves static assets and relays ROS2 traffic through rosbridge. All rendering, state management, and interface logic execute in the browser, leaving the Pi's computing resources available for ROS2, Docker containers, and hardware communication.
+**Why two separate interfaces converge on one process**: rather than letting the dashboard and the remote each write robot state independently (which risks two disagreeing sources of truth), the Python bridge is the *only* thing that ever writes to the persistent CSV files or maintains the "current position" tracking used by both interfaces. See [Software Architecture](#software-architecture) below for exactly how that works.
 
 ---
 
-# Features
+## Hardware
 
-## Motion Control
+| Component | Detail |
+|---|---|
+| **Base + Elbow actuation** | 2× NEMA17 stepper motors, each driving a custom 3D-printed planetary gearbox for additional torque |
+| **Stepper drivers** | DRV8825 — DIR pin via plain GPIO (static logic level only), STEP pin via hardware PWM (sustained high-frequency switching) |
+| **Position feedback** | 2× AS5600 magnetic rotary encoders, analogue-output mode, read via ADC — mounted on each joint's **output stage**, not the motor shaft, specifically to correct for backlash in the printed planetary gearboxes |
+| **Wrist + gripper actuation** | MF90 servos (mirrored pair for the gripper; mechanical model has a mounting provision for a 4th servo for increased wrist actuation power) |
+| **Motor controller** | ESP32-S3 — runs the micro-ROS client, the PID control loop, and servo control, all non-blocking |
+| **Physical remote** | ESP32-S2 — push buttons, I²C-interfaced LCD, deadman switch, hardware-adjacent E-stop trigger |
+| **Host compute** | Raspberry Pi — runs the full software stack under Docker Compose |
+| **Power** | 24V/3A supply for the stepper motor rail (gated by a physical, hardware-level E-stop switch); servos powered from the same 24V rail via a buck converter to 5V, rather than a second independent supply. High-current and logic-level rails are kept electrically separate, with all rail grounds tied together at one common reference point to prevent stray potential differences across components. |
 
-- Independent control of all six joints
-- Slider, numeric input, and hold-to-jog controls
-- Cartesian jogging interface
-- Adjustable movement speed
-- Built-in robot presets
-- User-defined custom positions
-- Live 2D arm visualization
-
----
-
-## Teach Mode
-
-- Motor power toggle for manual guidance
-- Waypoint recording from encoder feedback
-- Trajectory playback
-- Persistent waypoint storage using Local Storage
+**Why encoders sit outside the gearbox, specifically**: a gearbox with backlash means the motor shaft's rotation and the joint's real, physical position aren't identical — there's a small amount of dead play between them. An encoder reading the motor shaft directly would be blind to exactly that error. Mounting it on the joint's own output stage means closed-loop correction acts on the real, physical joint angle, backlash included.
 
 ---
 
-## Closed-Loop Accuracy
+## Software Architecture
 
-- Live commanded-versus-actual joint comparison
-- Color-coded tracking error indicators
-- Automated repeatability testing
-- SVG trend visualization
-- CSV export for experimental results
+### The Raspberry Pi — Docker Compose stack
 
----
+The Pi runs seven containers under one Compose file, each with a single, narrow responsibility:
 
-## Diagnostics & Safety
+- **ros2-core** — holds a stable ROS2 environment open for diagnostics; runs no functional node itself.
+- **rosbridge** — exposes the ROS2 graph over WebSocket (`:9090`) so the browser dashboard can talk to it directly; browsers can't join ROS2's native DDS/UDP-multicast discovery.
+- **micro-ros-agent** — bridges the ESP32-S3's serial micro-ROS transport onto the ROS2 DDS graph, acting as a full DDS participant on the microcontroller's behalf.
+- **arm-launcher** — builds and runs `robot_state_publisher` from the arm's URDF description, computing the live 3D transform tree Foxglove renders.
+- **foxglove-studio** — the 3D visualization panel itself, connected via rosbridge.
+- **mqtt-ros-bridge** — the custom Python bridge (see below); the actual center of the whole system.
+- A native (non-containerized) **Mosquitto** broker runs as a systemd service on the Pi host, avoiding a port conflict with a second, containerized broker.
 
-- ROS2 topic monitoring
-- ROS2 node monitoring
-- Emergency Stop
-- Resume confirmation
-- Motion confirmation dialogs
-- Automatic reconnection with exponential backoff
-- Session logging with CSV export
-- Demo Mode for presentations
+This containerized approach was deliberately chosen so the entire stack could be rebuilt deterministically — and in practice, it was migrated wholesale onto a second physical Raspberry Pi with only the Compose file and the built dashboard needing to be copied across.
 
----
+### The Python MQTT↔ROS2 Bridge
 
-## Simulation
+A single `rclpy` process is the actual center of the architecture — the sole translator between MQTT (remote) and ROS2 (everything else), and the sole writer of the two persistent CSV files. It maintains two separate, purpose-specific position-tracking records:
 
-A built-in Local Simulation Mode allows every dashboard feature—including Teach Mode, waypoint playback, and repeatability testing—to operate without ROS2 or physical hardware by using an internal mock transport.
+- **Real feedback** — populated *only* by genuine AS5600 sensor readings (base, elbow).
+- **Commanded position** — the most recent explicit command from *either* interface, for *every* joint, since the wrist and gripper servos have no position feedback at all.
 
----
+This split drives three real behaviors:
+1. **Dashboard sliders always show commanded position, never live feedback** — showing feedback caused the slider to visibly fight the operator's own input while the motor was still catching up to a new target.
+2. **A saved waypoint merges real feedback (where it exists) with commanded position (as fallback)** — so hand-teaching the sensored joints and slider-setting the servo joints in one motion produces one consistent pose.
+3. **Playback advances only once real feedback confirms arrival** within a tolerance, rather than trusting a fixed timer.
 
-## Platform
+### Why micro-ROS, specifically
 
-- Responsive tablet-friendly interface
-- Touch-optimized controls
-- Industrial HMI-inspired dark theme
-- Client-side only architecture
+A full ROS2 install depends on a full DDS stack — tens of megabytes of memory footprint at minimum, with its own UDP-multicast peer discovery. An ESP32-S3 has ~512KB of SRAM and no realistic capacity for that, alongside real-time motor control code. micro-ROS closes this gap via the **Micro XRCE-DDS** protocol: the microcontroller runs only a lightweight client, talking over serial to the `micro-ros-agent`, which is the component that actually holds a real DDS participant and performs real discovery *on the microcontroller's behalf*. The result: the ESP32-S3 can publish/subscribe to real ROS2 topics, indistinguishable from any other ROS2 node, without ever running DDS itself.
 
----
+### Real-Time Behaviour
 
-# Technology Stack
+The system as a whole is **soft real-time** — no single missed deadline constitutes an outright failure, and the architecture is built to tolerate variable timing gracefully. Within that, the ESP32-S3's stepper control loop is the most timing-sensitive component: step generation is offloaded to the ESP32's dedicated LEDC hardware PWM peripheral rather than software GPIO toggling, so pulse timing doesn't compete with the PID loop or the micro-ROS executor for CPU cycles, and doesn't introduce motor stall or audible jitter from unpredictable software timing. This matters concretely in trajectory playback: the arrival-confirmation tolerance had to be set *looser* than the stepper firmware's own internal settling tolerance, since waiting for tighter precision than the control loop itself guarantees would time out every single point.
 
-### Frontend
+### Emergency Stop vs. De-energizing
 
-- React 18
-- Vite
-- JavaScript
-- CSS
-- SVG
+These are deliberately different code paths. De-energizing (`Enable Steppers` off) lets the arm go limp — correct for hand-teaching, where you want to move it freely. **E-Stop does the opposite**: it reads the joints' true current position from the encoders and re-commands that exact position, so the PID loop actively holds the arm rigidly under power. Going limp is the right behavior for teaching; it would be exactly the wrong behavior for a safety stop.
 
-### Robotics
+### Units and Naming Translation
 
-- ROS2 Humble
-- rosbridge_suite
-- roslib.js
-
-### Communication
-
-- WebSocket
-- ROS2 Topics
-
-### Deployment
-
-- Docker
-- Nginx
-- Raspberry Pi
+- **Radians internally** (ROS2 convention, used in all live messages), **degrees in the persistent CSV files** (for human readability) — conversion happens at exactly two boundary points, not scattered through the codebase.
+- **URDF joint naming ≠ internal joint naming.** Following a mechanical redesign (an originally-planned shoulder joint was removed — see Limitations), the CAD tool's auto-generated URDF joint numbering no longer matches the control system's own internal names. This is reconciled via an explicit translation table used *only* when driving the 3D visualization — every other part of the system uses the control system's own stable naming and is unaffected by however the CAD export chooses to number things.
 
 ---
 
-# Engineering Decisions
+## Usage
 
-Several architectural decisions were intentionally made to keep the dashboard lightweight, modular, and suitable for embedded robotic systems.
-
-- **Client-side architecture** — the application has no dedicated backend server. The Raspberry Pi only serves static files and relays ROS2 traffic.
-- **Transport abstraction** — all robot commands pass through a single `dispatchCommand()` layer, making it straightforward to replace rosbridge with another transport protocol in the future.
-- **Hardware-independent Simulation Mode** — enables development and testing without requiring access to the robotic arm.
-- **Native SVG visualizations** — custom-built charts eliminate the need for external charting libraries, reducing bundle size.
-- **Browser-native CSV export** — exports are generated using standard browser APIs without additional dependencies.
-- **Local Storage persistence** — operator preferences, presets, and waypoints remain available across browser sessions without requiring cloud storage or databases.
-- **Automatic reconnection strategy** — capped exponential backoff prevents endless retry loops while providing robust recovery from temporary network interruptions.
-- **Centralized dashboard architecture** — the application's primary functionality resides within a single React component (App.jsx), simplifying rapid prototyping and maintenance while supporting modular assets and styling.
+- **Manual Control** — drag joint sliders or use the remote's jog buttons; both interfaces update live and in sync.
+- **Teach Mode** — de-energize the steppers, position the arm by hand, set wrist/gripper via slider, press Record.
+- **Playback** — select a saved trajectory and press Play; the system waits for real arrival at each point before advancing.
+- **Repeatability Testing** — select a preset, set a cycle count (10+), and run; view positional error and export results as CSV.
+- **Emergency Stop** — available on both interfaces; holds the arm rigidly in place under power until explicitly cleared. This is a **soft stop** over WiFi/MQTT/ROS2 — the arm's only unconditional, hardware-level stop is the physical E-stop switch on the 24V rail.
 
 ---
 
-# Getting Started
+## Known Limitations
 
-Install dependencies.
+- Only base and elbow have true position feedback; wrist and gripper are open-loop, so a taught pose for those two joints is only as accurate as the last command sent.
+- An originally-planned third stepper-driven shoulder joint was removed after testing showed insufficient motor torque for its real mechanical load.
+- The AS5600 encoders run in analogue-output mode rather than I²C, which reintroduces measurable small-scale reading noise even when a joint is stationary — this is why the dashboard shows *commanded* position rather than live feedback.
+- The gripper's real mechanical linkage is modeled in the URDF as six coupled joints; the control system treats it as one binary value, so the 3D visualization does not currently animate gripper open/close.
+- The software E-Stop is explicitly not a substitute for the hardware E-stop switch on the 24V rail.
 
-```bash
-npm install
-```
-
-Start the development server.
-
-```bash
-npm run dev
-```
-
-`roslib.js` is loaded through a CDN in `index.html`. During connection the dashboard verifies that `window.ROSLIB` exists and reports a clear error if the library is unavailable.
+See the full project report for a complete discussion of limitations, testing methodology, and possible future improvements (including a discussion of dual-core FreeRTOS task separation on the ESP32-S3 — assessed as a legitimate but *not currently justified* upgrade at the system's present scale).
 
 ---
 
-## Simulation Mode
-
-No hardware is required for development.
-
-Switch the dashboard header to **SIM** to enable the built-in simulation transport.
-
-All major functionality is available, including:
-
-- Joint control
-- Teach Mode
-- Waypoint playback
-- Repeatability testing
-- Diagnostics
-
----
-
-## Connecting to a Robot
-
-1. Enter the rosbridge WebSocket address.
-2. Select **LIVE** mode.
-3. Press **Connect**.
-
----
-
-## Production Deployment
-
-```bash
-npm run build
-
-rsync -avz --delete ./dist/ pi@<pi-host>:/path/to/dashboard-dist/
-```
-
-The production build is served by Nginx running on the Raspberry Pi.
-
----
-
-# Development Status
-
-| Component | Status |
-|-----------|--------|
-| Dashboard | Complete |
-| ROS2 integration | Complete |
-| Local Simulation Mode | Complete |
-| Repeatability Testing | Complete |
-| Docker deployment | Complete |
-| Serial bridge node | In development |
-| ESP32-S2 firmware | In development |
-| Foxglove URDF | Pending |
-
-The dashboard has intentionally been designed to remain hardware-independent during software development so that every workflow can be validated before physical system integration.
-
----
-
-# Future Work
-
-Planned improvements include:
-
-- Cartesian inverse kinematics
-- MoveIt 2 integration
-- Motion planning
-- Collision detection
-- Camera streaming
-- Vision-guided manipulation
-- Multi-arm support
-- MQTT transport backend
-- User authentication and role management
-- Progressive Web App (PWA) support
-- Performance benchmarking tools
-- Additional diagnostic visualizations
-
----
-
-# Repository Structure
-
-```text
-├── public/
-│   ├── favicon.svg          # Application favicon
-│   └── icons.svg            # Dashboard icons
-│
-├── src/
-│   ├── assets/              # Static assets
-│   ├── App.css              # Dashboard styling
-│   ├── App.jsx              # Main dashboard application
-│   ├── index.css            # Global styles
-│   └── main.jsx             # React entry point
-│
-├── .gitignore
-├── .oxlintrc.json           # Lint configuration
-├── index.html               # Vite HTML entry
-├── LICENSE
-├── package.json
-├── package-lock.json
-├── README.md
-└── vite.config.js           # Vite configuration
-```
-
----
-
-# License
+## License
 
 This project is licensed under the MIT License.
