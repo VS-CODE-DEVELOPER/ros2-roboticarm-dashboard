@@ -4,6 +4,8 @@
 
 ---
 
+**[Live Demo (Local Simulation Mode)](https://ros2-roboticarm-dashboard.vercel.app/)**
+
 ## Overview
 
 ARM·CONTROL is the full control system for a 3DOF robotic arm — base rotation, elbow, and wrist — plus an independently actuated gripper end-effector. It was built as an Embedded Systems Lab final project, and implements four primary capabilities:
