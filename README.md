@@ -154,6 +154,10 @@ These are deliberately different code paths. De-energizing (`Enable Steppers` of
 See the full project report for a complete discussion of limitations, testing methodology, and possible future improvements (including a discussion of dual-core FreeRTOS task separation on the ESP32-S3 — assessed as a legitimate but *not currently justified* upgrade at the system's present scale).
 
 ---
+## Related Repositories
+
+- **Firmware (microROS)** — [ros2-roboticarm-microros](https://github.com/VS-CODE-DEVELOPER/ros2-roboticarm-microros) — ESP32-S3 closed-loop stepper/servo control
+---
 
 ## License
 
