@@ -2,21 +2,18 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const JOINTS = [
-  { id:"joint_1", label:"Base Rotation", short:"J1", min:-180, max:180,  unit:"°", color:"#00D4FF" },
-  { id:"joint_2", label:"Shoulder",      short:"J2", min:-90,  max:90,   unit:"°", color:"#00FF9D" },
-  { id:"joint_3", label:"Elbow",         short:"J3", min:-135, max:135,  unit:"°", color:"#FFB800" },
-  { id:"joint_4", label:"Wrist Pitch",   short:"J4", min:-90,  max:90,   unit:"°", color:"#FF6B35" },
-  { id:"joint_5", label:"Wrist Roll",    short:"J5", min:-180, max:180,  unit:"°", color:"#C77DFF" },
-  { id:"joint_6", label:"Gripper",       short:"J6", min:0,    max:100,  unit:"%", color:"#FF4D6D" },
+  { id:"joint_1", label:"Base Rotation", short:"J1", min:-60,  max:60,   unit:"°", color:"#00D4FF", needsPower:true },
+  { id:"joint_3", label:"Elbow",         short:"J3", min:-90,  max:90,   unit:"°", color:"#FFB800", needsPower:true },
+  { id:"joint_4", label:"Wrist Pitch",   short:"J4", min:-30,  max:30,   unit:"°", color:"#FF6B35" },
+  { id:"joint_6", label:"Gripper",       short:"J6", min:0,    max:100,  unit:"%", color:"#FF4D6D", isGripper:true },
 ];
 const LIMIT_WARN = 5;
 const DEFAULT_PRESETS = [
-  { name:"Home",       icon:"⌂", values:{joint_1:0,  joint_2:0,   joint_3:0,   joint_4:0,  joint_5:0, joint_6:0  }, builtin:true },
-  { name:"Grab Ready", icon:"✦", values:{joint_1:0,  joint_2:45,  joint_3:-90, joint_4:45, joint_5:0, joint_6:0  }, builtin:true },
-  { name:"Release",    icon:"◎", values:{joint_1:0,  joint_2:45,  joint_3:-90, joint_4:45, joint_5:0, joint_6:100}, builtin:true },
-  { name:"Stow",       icon:"▣", values:{joint_1:0,  joint_2:-90, joint_3:135, joint_4:-45,joint_5:0, joint_6:0  }, builtin:true },
+  { name:"Home",       icon:"⌂", values:{joint_1:0,  joint_3:0,   joint_4:0,  joint_6:0  }, builtin:true },
+  { name:"Grab Ready", icon:"✦", values:{joint_1:0,  joint_3:-90, joint_4:30, joint_6:0  }, builtin:true },
+  { name:"Release",    icon:"◎", values:{joint_1:0,  joint_3:-90, joint_4:30, joint_6:100}, builtin:true },
+  { name:"Stow",       icon:"▣", values:{joint_1:0,  joint_3:90,  joint_4:-30,joint_6:0  }, builtin:true },
 ];
-const SPEEDS   = ["Slow","Normal","Fast"];
 const ACTIVITY_LABELS = {
   UP_DOWN:"Jog", SAVE:"Save Waypoint",
   motors_on:"Motors ON", motors_off:"Motors OFF",
@@ -24,9 +21,13 @@ const ACTIVITY_LABELS = {
   home:"Preset: Home", grab_ready:"Preset: Grab Ready", stow:"Preset: Stow",
   save_preset:"Save Preset", delete_last_preset:"Delete Last Preset",
   estop_engage:"E-Stop", estop_resume:"E-Stop Resume",
+  gripper_open:"Gripper OPEN", gripper_close:"Gripper CLOSE",
 };
-const JOG_MS   = [120, 60, 30];
-const JOG_DEG  = [1, 2, 5];
+// Speed tiers removed — higher speed was causing power supply load issues
+// on real hardware. Fixed, single safe values now, everywhere.
+const FIXED_JOG_MS = 60;
+const FIXED_JOG_DEG = 2;
+const FIXED_SPEED_MS = 1;
 const initJ    = () => Object.fromEntries(JOINTS.map(j=>[j.id,0]));
 const nearLim  = (v,j) => v<=j.min+LIMIT_WARN || v>=j.max-LIMIT_WARN;
 const atLim    = (v,j) => v<=j.min || v>=j.max;
@@ -50,10 +51,6 @@ const safeSet = (key, value) => {
 const initialUrl = () => {
   const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
   return safeGet("armctrl_url", `ws://${host}:9090`);
-};
-const initialSpeed = () => {
-  const n = Number(safeGet("armctrl_speed", "1"));
-  return Number.isFinite(n) && n >= 0 && n <= 2 ? n : 1;
 };
 const initialMode = () => {
   const m = safeGet("armctrl_mode", "ros");
@@ -217,6 +214,7 @@ input[type=range]:disabled{cursor:not-allowed;opacity:.4}
 .numinp.li{border-color:var(--red);color:var(--red)}
 .numinp:disabled{opacity:.4;cursor:not-allowed}
 .sbtn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;background:var(--card);border:1px solid var(--b0);border-radius:4px;color:var(--mid);cursor:pointer;font-size:14px;flex-shrink:0}
+.sbtn.on{background:var(--cdim);border-color:var(--cyan);color:var(--cyan);font-weight:700}
 .sbtn:hover:not([disabled]){border-color:var(--cyan);color:var(--cyan);background:var(--cdim)}
 .sbtn[disabled]{opacity:.3;cursor:not-allowed}
 .zero-btn{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--lo);background:transparent;border:1px solid var(--b1);border-radius:4px;padding:4px 8px;cursor:pointer}
@@ -413,32 +411,32 @@ function ConfirmDialog({ open, title, body, confirmLabel, danger, onConfirm, onC
   );
 }
 
-function useLongPress(cb, speed) {
+function useLongPress(cb) {
   const ref=useRef(cb), iv=useRef(null), to=useRef(null);
   useEffect(()=>{ref.current=cb;},[cb]);
   const start=useCallback(e=>{
     if(e?.preventDefault) e.preventDefault();
     ref.current();
-    to.current=setTimeout(()=>{iv.current=setInterval(()=>ref.current(),JOG_MS[speed]);},300);
-  },[speed]);
+    to.current=setTimeout(()=>{iv.current=setInterval(()=>ref.current(),FIXED_JOG_MS);},300);
+  },[]);
   const stop=useCallback(()=>{clearTimeout(to.current);clearInterval(iv.current);},[]);
   useEffect(()=>()=>stop(),[stop]);
   return{onMouseDown:start,onMouseUp:stop,onMouseLeave:stop,onTouchStart:start,onTouchEnd:stop};
 }
 
-function SBtn({children,onClick,disabled,speed,title,style}){
-  const h=useLongPress(onClick,speed);
+function SBtn({children,onClick,disabled,title,style}){
+  const h=useLongPress(onClick);
   return <button className="sbtn" disabled={disabled} title={title} style={style} {...(disabled?{}:h)}>{children}</button>;
 }
-function JBtn({children,onClick,disabled,speed,cls=""}){
-  const h=useLongPress(onClick,speed);
+function JBtn({children,onClick,disabled,cls=""}){
+  const h=useLongPress(onClick);
   return <button className={`jbtn ${cls}`} disabled={disabled} {...(disabled?{}:h)}>{children}</button>;
 }
 
 function ArmViz({joints,style}){
   const cx=100,cy=100,R=d=>(d*Math.PI)/180;
-  const sa=R(joints.joint_2-90),ea=R(joints.joint_2+joints.joint_3-90);
-  const wa=R(joints.joint_2+joints.joint_3+joints.joint_4-90),ba=R(joints.joint_1);
+  const sa=R(-90); // shoulder link still exists physically, fixed angle now — no longer an actuated joint
+  const ea=R(joints.joint_3-90), wa=R(joints.joint_3+joints.joint_4-90), ba=R(joints.joint_1);
   const L1=44,L2=32,L3=18;
   const x1=cx+L1*Math.cos(sa),y1=cy+L1*Math.sin(sa);
   const x2=x1+L2*Math.cos(ea),y2=y1+L2*Math.sin(ea);
@@ -515,14 +513,12 @@ export default function App(){
   const [estp,setEstp]   = useState(false);
   const [joints,setJ]    = useState(initJ());
   const [feed,setFeed]   = useState(initJ());
-  const [speed,setSpRaw] = useState(initialSpeed());
   const [logs,setLogs]   = useState([]);
   const [url,setUrlRaw]  = useState(initialUrl());
   const [hz,setHz]       = useState(0);
   const [confirmAction,setConfirmAction] = useState(null);
   
   // Left Panel Tab State
-  const [leftTab,setLeftTab] = useState("manual");
   const [testColTab,setTestColTab] = useState("test");
 
   const [mode,setModeRaw] = useState(initialMode());
@@ -540,7 +536,7 @@ export default function App(){
   const [dragId,setDragId] = useState(null);
   const dragIdRef = useRef(null);
   useEffect(()=>{ dragIdRef.current=dragId; },[dragId]);
-  const startDrag=(id)=>{ setJabs(id, feedReceivedRef.current[id] ? feedRef.current[id] : joints[id]); setDragId(id); };
+  const startDrag=(id)=>{ setDragId(id); };
   const endDrag=()=>setDragId(null);
   const playCancelRef = useRef(false);
 
@@ -585,12 +581,6 @@ export default function App(){
   useEffect(()=>{const t=setInterval(()=>{setHz(cntRef.current);cntRef.current=0;},1000);return()=>clearInterval(t);},[]);
 
   const setUrl = useCallback(v=>{ setUrlRaw(v); safeSet("armctrl_url", v); },[]);
-  const speedPubRef=useRef(null);
-  const selfSpeedChangeRef=useRef(false);
-  const setSp  = useCallback(v=>{
-    setSpRaw(v); safeSet("armctrl_speed", String(v));
-    if(speedPubRef.current){ selfSpeedChangeRef.current=true; speedPubRef.current.publish(new ROSLIB.Message({data:v})); }
-  },[]);
 
   const dispatchCommand = useCallback((type, payload) => {
     if (mode === "mock") {
@@ -663,7 +653,6 @@ export default function App(){
         // Keeps the toggle accurate no matter who changed power — the
         // on-screen switch, or the physical remote via the MQTT bridge.
         if(typeof msg.data==="boolean"){
-          setLeftTab(msg.data ? "manual" : "teach"); // symmetric — both directions automatic now
           if(selfPowerChangeRef.current){ selfPowerChangeRef.current=false; setArmPower(msg.data); }
           else setArmPower(prev=>{
             if(prev!==msg.data) log(`Power ${msg.data?"ON":"OFF"} (remote)`, msg.data?"success":"warn");
@@ -677,16 +666,6 @@ export default function App(){
           if(selfEstopChangeRef.current){ selfEstopChangeRef.current=false; setEstp(msg.data); }
           else setEstp(prev=>{
             if(prev!==msg.data) log(msg.data?"⚠ E-STOP TRIGGERED (remote)":"Emergency stop cleared (remote)", msg.data?"error":"success");
-            return msg.data;
-          });
-        }
-      });
-      speedPubRef.current=new ROSLIB.Topic({ros,name:"/webui/speed",messageType:"std_msgs/Int32"});
-      speedPubRef.current.subscribe(msg=>{
-        if(typeof msg.data==="number"){
-          if(selfSpeedChangeRef.current){ selfSpeedChangeRef.current=false; setSpRaw(msg.data); }
-          else setSpRaw(prev=>{
-            if(prev!==msg.data){ log(`Speed → ${SPEEDS[msg.data]} (remote)`,"info"); setTestColTab("remote"); }
             return msg.data;
           });
         }
@@ -783,9 +762,9 @@ export default function App(){
   const publish=useCallback((ov)=>{
     if(estp) return;
     if(mode==="ros" && !pubRef.current) return;
-    const j=ov??joints, sm=[.3,1,2][speed];
-    dispatchCommand("JOINT_COMMAND", {joints:j, speedMs:sm});
-  },[joints,estp,speed,mode,dispatchCommand]);
+    const j=ov??joints;
+    dispatchCommand("JOINT_COMMAND", {joints:j, speedMs:FIXED_SPEED_MS});
+  },[joints,estp,mode,dispatchCommand]);
 
   const handleEstop=useCallback(()=>{
     setEstp(true); log("⚠ EMERGENCY STOP ACTIVATED","error");
@@ -849,7 +828,7 @@ export default function App(){
 
   // Tiny CSV parser — no library needed for this simple, quoted-value-free shape
   const parseCSV=(text)=>{
-    const lines=text.trim().split("\n");
+    const lines=text.trim().split("\n").map(l=>l.replace(/\r$/,"")); // strip CRLF remnants per-line, not just once for the whole block
     if(lines.length<2) return [];
     const headers=lines[0].split(",");
     return lines.slice(1).map(line=>{
@@ -918,7 +897,6 @@ export default function App(){
       selfPowerChangeRef.current=true;
       setArmPower(on); publishPower(on);
       log(on?"Power ON":"Power OFF — Teach Mode", on?"success":"warn");
-      if(!on) setLeftTab("teach");
     },
   });
 
@@ -1040,7 +1018,7 @@ export default function App(){
   // permanently folded to zero the instant power went off. Now uses
   // the same per-joint "have we actually heard from this joint" check
   // that already fixed the sliders.
-  const vizJoints = Object.fromEntries(JOINTS.map(j=>[j.id, (feedReceivedRef.current[j.id] ? feed[j.id] : joints[j.id]) ?? 0]));
+  const vizJoints = Object.fromEntries(JOINTS.map(j=>[j.id, joints[j.id] ?? 0])); // commanded position, matching the sliders
   const testPreset = presets.find(p=>p.name===testTarget) || presets[1];
   const testAvg = testResults.length ? (testResults.reduce((a,r)=>a+r.err,0)/testResults.length) : null;
   const testMax = testResults.length ? Math.max(...testResults.map(r=>r.err)) : null;
@@ -1094,133 +1072,120 @@ export default function App(){
 
           {/* ── LEFT PANEL (Tabs) ── */}
           <aside className="panel-left">
-            <div className="left-tabs">
-              <button className={`ltab ${leftTab==="manual"?"on":""}`} onClick={()=>setLeftTab("manual")}>Manual Control</button>
-              <button className={`ltab teach ${leftTab==="teach"?"on":""}`} onClick={()=>setLeftTab("teach")}>Teach & Auto</button>
-            </div>
-            
             <div className="left-content">
-              {leftTab === "manual" ? (
-                <>
-                  <div className="spd-row">
-                    {SPEEDS.map((s,i)=>{
-                      const rate = (JOG_DEG[i] / (JOG_MS[i]/1000)).toFixed(1);
-                      return <button key={s} className={`spd ${speed===i?"on":""}`} onClick={()=>setSp(i)}><div>{s}</div><div className="spd-rate">{rate}°/s</div></button>;
-                    })}
-                  </div>
-                  <div className="pwr-row">
-                    <div className="pwr-label"><span className="pwr-title">{armPower?"Energized":"De-energized"}</span><span className="pwr-sub">{armPower?"NORMAL CONTROL":"BACK-DRIVABLE"}</span></div>
-                    <button className={`tgl ${armPower?"on":""}`} onClick={()=>requestArmPower(!armPower)} disabled={conn!=="connected"||estp}><div className="tgl-thumb"/></button>
-                  </div>
-                  <div className="plbl">Joint Sliders <button className="zero-btn" onClick={requestReset} disabled={dis}>Zero All</button></div>
-                  <div>
-                    {JOINTS.map(j=>{
-                      const hasFeed = !!feedReceivedRef.current[j.id];
-                      const displayVal = (dragId===j.id ? joints[j.id] : (hasFeed ? feed[j.id] : joints[j.id])) ?? 0;
-                      const val=displayVal, fill=fillSt(val,j.min,j.max,j.color);
-                      const isN=nearLim(val,j), isA=atLim(val,j), step=JOG_DEG[speed];
-                      return(
-                        <div className={`jrow ${isA?"at":isN?"near":""}`} key={j.id}>
-                          <div className="jhdr">
-                            <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label} {isA&&<span className="lbdg at">LIMIT</span>}{!isA&&isN&&<span className="lbdg near">NEAR</span>}</div>
-                            <div className={`jval ${isA?"at":isN?"near":""}`} style={isN||isA?{}:{color:j.color}}>{val.toFixed(1)}{j.unit}</div>
-                          </div>
-                          <div className="jrange">
-                            <span className="jmin">{j.min}</span>
-                            <div className="swrap">
-                              <div className="strk"/><div className="sfill" style={fill}/>
-                              <input type="range" className={isA?"ls":isN?"ws":""} min={j.min} max={j.max} step=".5" value={val}
-                                onMouseDown={()=>startDrag(j.id)} onTouchStart={()=>startDrag(j.id)}
-                                onMouseUp={endDrag} onTouchEnd={endDrag} onBlur={endDrag}
-                                onChange={e=>setJabs(j.id,e.target.value)} disabled={dis}/>
-                            </div>
-                            <span className="jmax">{j.max}</span>
-                          </div>
-                          <div className="jinp">
-                            <SBtn speed={speed} onClick={()=>stepJ(j.id,-step)} disabled={dis}>−</SBtn>
-                            <input className={`numinp ${isA?"li":isN?"wi":""}`} type="number" value={val.toFixed(1)} min={j.min} max={j.max} step=".5" onChange={e=>setJabs(j.id,e.target.value)} disabled={dis}/>
-                            <SBtn speed={speed} onClick={()=>stepJ(j.id,step)} disabled={dis}>+</SBtn>
-                            <button className="sbtn" style={{marginLeft:"auto",width:32}} onClick={()=>setJabs(j.id,0)} disabled={dis}>⊙</button>
-                          </div>
+              <div className="pwr-row">
+                <div className="pwr-label"><span className="pwr-title">{armPower?"Energized":"De-energized"}</span><span className="pwr-sub">{armPower?"NORMAL CONTROL":"BACK-DRIVABLE"}</span></div>
+                <button className={`tgl ${armPower?"on":""}`} onClick={()=>requestArmPower(!armPower)} disabled={conn!=="connected"||estp}><div className="tgl-thumb"/></button>
+              </div>
+              <div className="plbl">Joint Sliders <button className="zero-btn" onClick={requestReset} disabled={dis}>Zero All</button></div>
+              <div>
+                {JOINTS.map(j=>{
+                  const displayVal = joints[j.id] ?? 0; // always commanded position — real feedback belongs in Feedback vs CMD, not here
+                  const val=displayVal, fill=fillSt(val,j.min,j.max,j.color);
+                  const isN=nearLim(val,j), isA=atLim(val,j), step=FIXED_JOG_DEG;
+                  // Base/Elbow are real steppers — only move when energized.
+                  // Wrist/Gripper are servos — always respond regardless of
+                  // stepper power state, this is exactly what makes teach
+                  // mode work: de-energize the steppers to hand-position
+                  // Base/Elbow, while still being able to set Wrist/Gripper
+                  // via their sliders the whole time.
+                  const jDis = j.needsPower ? dis : (estp||conn!=="connected");
+                  if(j.isGripper){
+                    const isOpen = val > 50;
+                    return(
+                      <div className="jrow" key={j.id}>
+                        <div className="jhdr">
+                          <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label}</div>
+                          <div className="jval" style={{color:j.color}}>{isOpen?"OPEN":"CLOSED"}</div>
                         </div>
-                      );
-                    })}
-                  </div>
-                  <div className="act-row">
-                    <button className="abtn" onClick={requestReset} disabled={dis}>Reset All</button>
-                    <button className="abtn" onClick={()=>publish()} disabled={dis}>Publish</button>
-                  </div>
-                  <div className="plbl">Cartesian Jog</div>
-                  <div style={{padding:"6px 0 10px"}}>
-                    {[
-                      {axis:"X",label:"Base / Yaw",  color:"#00D4FF",id:"joint_1",dir:["←","→"]},
-                      {axis:"Y",label:"Shoulder",    color:"#00FF9D",id:"joint_2",dir:["↓","↑"]},
-                      {axis:"Z",label:"Elbow",       color:"#FFB800",id:"joint_3",dir:["←","→"]},
-                    ].map(({axis,label,color,id,dir})=>(
-                      <div className="jax" key={axis}>
-                        <div className="axlbl"><div className="axdot" style={{background:color}}/>{axis} — {label}</div>
-                        <div className="jog-row">
-                          <JBtn speed={speed} onClick={()=>stepJ(id,-JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[0]}</span><span>{axis}−</span></JBtn>
-                          <div className="jbtn mid">{axis}<br/>hold</div>
-                          <JBtn speed={speed} onClick={()=>stepJ(id,JOG_DEG[speed])} disabled={dis}><span className="jarr">{dir[1]}</span><span>{axis}+</span></JBtn>
+                        <div className="jinp" style={{marginTop:6}}>
+                          <button className={`sbtn ${!isOpen?"on":""}`} style={{flex:1}} onClick={()=>setJabs(j.id,0)} disabled={jDis}>CLOSE</button>
+                          <button className={`sbtn ${isOpen?"on":""}`} style={{flex:1}} onClick={()=>setJabs(j.id,100)} disabled={jDis}>OPEN</button>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className={`teach-status ${armPower?"off":"on"}`}>
-                    {armPower ? "Motors energized — turn Power OFF to teach" : "Arm is free — move it by hand, then record"}
-                  </div>
-                  <button className="record-btn" onClick={recordWaypoint} disabled={armPower||conn!=="connected"||estp}>
-                    <span className="rdot"/>RECORD WAYPOINT
-                  </button>
-                  <div className="plbl">Trajectory ({waypoints.length})</div>
-                  <div className="wp-scroll">
-                    {waypoints.length===0
-                      ? <div className="wp-empty">No waypoints yet.</div>
-                      : waypoints.map(wp=>(
-                        <div className="wp-row" key={wp.id}>
-                          <div>
-                            <div className="wp-name">{wp.label}</div>
-                            <div className="wp-vals">{JOINTS.map(j=>`${j.short}:${(wp.values[j.id]??0).toFixed(0)}`).join(" ")}</div>
-                          </div>
-                          <button className="wp-del" onClick={()=>deleteWaypoint(wp.id)}>DEL</button>
+                    );
+                  }
+                  return(
+                    <div className={`jrow ${isA?"at":isN?"near":""}`} key={j.id}>
+                      <div className="jhdr">
+                        <div className="jname"><div className="jdot" style={{background:j.color}}/>{j.label} {isA&&<span className="lbdg at">LIMIT</span>}{!isA&&isN&&<span className="lbdg near">NEAR</span>}</div>
+                        <div className={`jval ${isA?"at":isN?"near":""}`} style={isN||isA?{}:{color:j.color}}>{val.toFixed(1)}{j.unit}</div>
+                      </div>
+                      <div className="jrange">
+                        <span className="jmin">{j.min}</span>
+                        <div className="swrap">
+                          <div className="strk"/><div className="sfill" style={fill}/>
+                          <input type="range" className={isA?"ls":isN?"ws":""} min={j.min} max={j.max} step=".5" value={val}
+                            onMouseDown={()=>startDrag(j.id)} onTouchStart={()=>startDrag(j.id)}
+                            onMouseUp={endDrag} onTouchEnd={endDrag} onBlur={endDrag}
+                            onChange={e=>setJabs(j.id,e.target.value)} disabled={jDis}/>
                         </div>
-                      ))
-                    }
-                  </div>
-                  <div className="play-row">
-                    <button className="pbtn2 primary" onClick={playTrajectory} disabled={waypoints.length===0||playing||conn!=="connected"}>▶ PLAY</button>
-                    <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
-                    <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
-                  </div>
-                  <div className="remote-saves-note">
-                    Trajectory points above are shared with the physical remote — saved from either side, both show up here and persist across reloads. This link is a raw export/backup of the same file.
-                  </div>
-                  <a className="pbtn2" href="/data/trajectory.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none"}}>
-                    ⬇ EXPORT TRAJECTORY (CSV)
-                  </a>
-                  <input type="file" accept=".csv" id="traj-upload-input" style={{display:"none"}} onChange={handleTrajectoryUpload}/>
-                  <label htmlFor="traj-upload-input" className="pbtn2" style={{display:"block",textAlign:"center",marginTop:6,cursor:conn!=="connected"?"not-allowed":"pointer",opacity:conn!=="connected"?.3:1}}>
-                    ⬆ UPLOAD TRAJECTORY (CSV)
-                  </label>
-                  <div className="plbl">Saved Positions</div>
-                  <a className="pbtn2" href="/data/presets.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none",marginBottom:8}}>
-                    ⬇ EXPORT PRESETS (CSV)
-                  </a>
-                  <div className="pgrid">
-                    {presets.map(p=>(
-                      <button key={p.name} className="pbtn" onClick={()=>requestPreset(p)} disabled={dis}>
-                        {!p.builtin && <span className="pbtn-del" onClick={(e)=>{e.stopPropagation();deletePreset(p.name);}}>✕</span>}
-                        <span className="ico">{p.icon}</span>{p.name}
-                      </button>
-                    ))}
-                    <button className="pbtn add" onClick={addPreset} disabled={conn!=="connected"}><span className="ico">+</span>Save Current</button>
-                  </div>
-                </>
-              )}
+                        <span className="jmax">{j.max}</span>
+                      </div>
+                      <div className="jinp">
+                        <SBtn onClick={()=>stepJ(j.id,-step)} disabled={jDis}>−</SBtn>
+                        <input className={`numinp ${isA?"li":isN?"wi":""}`} type="number" value={val.toFixed(1)} min={j.min} max={j.max} step=".5" onChange={e=>setJabs(j.id,e.target.value)} disabled={jDis}/>
+                        <SBtn onClick={()=>stepJ(j.id,step)} disabled={jDis}>+</SBtn>
+                        <button className="sbtn" style={{marginLeft:"auto",width:32}} onClick={()=>setJabs(j.id,0)} disabled={jDis}>⊙</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="act-row">
+                <button className="abtn" onClick={requestReset} disabled={dis}>Reset All</button>
+                <button className="abtn" onClick={()=>publish()} disabled={dis}>Publish</button>
+              </div>
+
+              <div className={`teach-status ${armPower?"off":"on"}`}>
+                {armPower ? "Motors energized — turn Power OFF to teach" : "Arm is free — move it by hand, then record"}
+              </div>
+              <button className="record-btn" onClick={recordWaypoint} disabled={armPower||conn!=="connected"||estp}>
+                <span className="rdot"/>RECORD WAYPOINT
+              </button>
+              <div className="plbl">Trajectory ({waypoints.length})</div>
+              <div className="wp-scroll">
+                {waypoints.length===0
+                  ? <div className="wp-empty">No waypoints yet.</div>
+                  : waypoints.map(wp=>(
+                    <div className="wp-row" key={wp.id}>
+                      <div>
+                        <div className="wp-name">{wp.label}</div>
+                        <div className="wp-vals">{JOINTS.map(j=>`${j.short}:${(wp.values[j.id]??0).toFixed(0)}`).join(" ")}</div>
+                      </div>
+                      <button className="wp-del" onClick={()=>deleteWaypoint(wp.id)}>DEL</button>
+                    </div>
+                  ))
+                }
+              </div>
+              <div className="play-row">
+                <button className="pbtn2 primary" onClick={playTrajectory} disabled={waypoints.length===0||playing||conn!=="connected"}>▶ PLAY</button>
+                <button className="pbtn2" onClick={stopPlayback} disabled={!playing}>■ STOP</button>
+                <button className="pbtn2 danger" onClick={clearWaypoints} disabled={waypoints.length===0}>CLEAR</button>
+              </div>
+              <div className="remote-saves-note">
+                Trajectory points above are shared with the physical remote — saved from either side, both show up here and persist across reloads. This link is a raw export/backup of the same file.
+              </div>
+              <a className="pbtn2" href="/data/trajectory.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none"}}>
+                ⬇ EXPORT TRAJECTORY (CSV)
+              </a>
+              <input type="file" accept=".csv" id="traj-upload-input" style={{display:"none"}} onChange={handleTrajectoryUpload}/>
+              <label htmlFor="traj-upload-input" className="pbtn2" style={{display:"block",textAlign:"center",marginTop:6,cursor:conn!=="connected"?"not-allowed":"pointer",opacity:conn!=="connected"?.3:1}}>
+                ⬆ UPLOAD TRAJECTORY (CSV)
+              </label>
+              <div className="plbl">Saved Positions</div>
+              <a className="pbtn2" href="/data/presets.csv" target="_blank" rel="noopener noreferrer" download style={{display:"block",textAlign:"center",textDecoration:"none",marginBottom:8}}>
+                ⬇ EXPORT PRESETS (CSV)
+              </a>
+              <div className="pgrid">
+                {presets.map(p=>(
+                  <button key={p.name} className="pbtn" onClick={()=>requestPreset(p)} disabled={dis}>
+                    {!p.builtin && <span className="pbtn-del" onClick={(e)=>{e.stopPropagation();deletePreset(p.name);}}>✕</span>}
+                    <span className="ico">{p.icon}</span>{p.name}
+                  </button>
+                ))}
+                <button className="pbtn add" onClick={addPreset} disabled={conn!=="connected"}><span className="ico">+</span>Save Current</button>
+              </div>
             </div>
           </aside>
 
@@ -1242,14 +1207,14 @@ export default function App(){
                 <div className="tcell"><div className="tlbl">Pub Hz</div><div className="tval">{hz}</div></div>
                 <div className="tcell"><div className="tlbl">Max Err</div><div className={`tval ${maxErr>5?"warn":"ok"}`}>{maxErr.toFixed(1)}°</div></div>
                 <div className="tcell"><div className="tlbl">Limits</div><div className={`tval ${anyNear?"warn":"ok"}`}>{anyNear?"WARN":"OK"}</div></div>
-                <div className="tcell"><div className="tlbl">Speed</div><div className={`tval ${speed===2?"warn":"ok"}`} style={{fontSize:13}}>{SPEEDS[speed]}</div></div>
+                <div className="tcell"><div className="tlbl">Points</div><div className="tval">{waypoints.length}</div></div>
                 <div className="tcell"><div className="tlbl">Emergency</div><div className={`tval ${estp?"err":"ok"}`} style={{fontSize:13}}>{estp?"ACTIVE":"CLEAR"}</div></div>
               </div>
             </div>
 
             <div className="slbl" style={{marginTop:10}}>Feedback vs CMD</div>
             <div>
-              {JOINTS.map(j=>{
+              {JOINTS.slice(0,2).map(j=>{
                 const cmd=joints[j.id]??0, fb=feed[j.id]??0, err=Math.abs(cmd-fb);
                 return(
                   <div className="fbrow" key={j.id}>
@@ -1368,6 +1333,7 @@ export default function App(){
           <span style={{color:"var(--lo)"}}>·</span>
           <span style={{color:"var(--lo)"}}>{mode==="mock"?"no hardware required":url}</span>
           <span style={{marginLeft:"auto",color:"var(--lo)"}}>ARM·CTRL COCKPIT V6.2 · {ts()}</span>
+          <span style={{marginLeft:12,color:"#0f0",fontFamily:"monospace"}}>DBG online={String(remoteOnline)} flash={String(flashingButton)} tab={testColTab}</span>
         </div>
 
       </div>
